@@ -22,7 +22,7 @@ zip -q -r "$ZIP" \
   web/index.html web/app.js web/parsers.js web/llm.js web/style.css web/template.html web/data.json \
   data/prices.db data/official_prices.json data/official_auto.json data/fx.json data/llm_key.example.json \
   scripts/collect.py scripts/fetch_official.py scripts/build_site.py scripts/verify.py scripts/write_llm_key.py \
-  scripts/run_daily.sh scripts/smoke.js scripts/test_parsers.js scripts/test_official_col.js scripts/test_upload_match.js scripts/test_llm.js scripts/test_upload_tier.js scripts/test_ai_e2e.js scripts/llm_proxy.py scripts/start_ai.command \
+  scripts/run_daily.sh scripts/smoke.js scripts/test_parsers.js scripts/test_official_col.js scripts/test_upload_match.js scripts/test_llm.js scripts/test_upload_tier.js scripts/test_ai_e2e.js scripts/test_media.py scripts/diag_media.py scripts/llm_proxy.py scripts/start_ai.command \
   scripts/fixtures/test.xlsx scripts/fixtures/test.docx \
   reports/latest.md \
   -x "*.DS_Store" "__pycache__/*" \

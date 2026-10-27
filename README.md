@@ -95,6 +95,9 @@ bash scripts/run_daily.sh
    也可直接粘贴表格文本兜底。识别不到时可选用**大模型补识别**（见下节）。
 7. **导出 CSV** — 当前筛选结果。
 
+> **图像 / 视频**：Seedance / Kling / Veo / Flux / Wan 等生成模型按张/秒/步计价，在独立的「图像 / 视频」标签页展示，
+> 不与 token 单价混比；采集不到的显示 `—`，不会当成免费。上传比对遇到媒体模型会标注「媒体计价」并跳过 token 最低价分析。
+
 ## 上传识别：规则引擎 + 大模型兜底
 
 两层设计，规则优先、AI 兜底：
@@ -182,6 +185,7 @@ export NODE_PATH="$(pwd)/node_modules"
 ```bash
 node scripts/test_parsers.js      # xlsx/docx/csv 解析 + 智能识别（仓库自带 fixtures）
 node scripts/test_llm.js          # AI 逻辑（假 fetch，不花钱）
+python3 scripts/test_media.py     # 图片/视频/语音媒体计价解析
 node scripts/test_upload_tier.js  # 区间展开 + 分析面板
 node scripts/test_official_col.js # 官网价格列专项
 node scripts/smoke.js             # 页面 DOM 冒烟

@@ -70,6 +70,7 @@ jobs:
         run: |
           node scripts/test_parsers.js
           node scripts/test_llm.js
+          python3 scripts/test_media.py
 
       # 页面是自包含单文件，只需要发布 index.html；顺手加 robots.txt 防搜索引擎收录
       - name: Prepare Pages artifact

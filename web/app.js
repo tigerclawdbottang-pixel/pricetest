@@ -310,6 +310,40 @@ function renderChart() {
       <div class="sm">${m.n_ver} 个版本</div></div>`;
 }
 
+/* ======================== 图像 / 视频 ======================== */
+const MEDIA_UNIT = { image: '张', video: '条', second: '秒', step: '步',
+  request: '次', utf8_mb: 'M UTF-8 bytes', unknown: '单位未知' };
+function mediaUnit(u) { return MEDIA_UNIT[u] || u || '—'; }
+function renderMedia() {
+  const box = $('media');
+  if (!box) return;
+  const rows = D.media || [];
+  if (!rows.length) {
+    box.innerHTML = '<div class="empty">暂无媒体价格。运行一次采集（run_daily.sh）后，Seedance / Flux / Kling / Veo / Wan 等模型会出现在这里。</div>';
+    return;
+  }
+  let h = `<div class="cnt" style="margin-bottom:8px">共 ${rows.length} 条媒体报价 · 按张/秒/步计价，不与 token 混比</div>`;
+  h += '<div class="tw" style="max-height:none"><table><thead><tr>' +
+    '<th class="l">模型</th><th>类型</th><th>源</th><th>计价单位</th>' +
+    '<th>价格 (USD)</th><th>参考价</th><th>折扣</th><th class="l">model_id</th>' +
+    '</tr></thead><tbody>';
+  for (const r of rows) {
+    const unit = mediaUnit(r.unit);
+    const price = r.price == null ? '—' : money(r.price);
+    const list = r.list_price == null ? '—' : money(r.list_price);
+    const disc = r.discount == null ? '—' : (r.discount > 0 ? r.discount.toFixed(0) + '%' : '—');
+    h += `<tr><td class="l"><span class="mname">${esc(r.name)}</span><br>` +
+      `<span class="mven">${esc(r.vendor)}</span></td>` +
+      `<td>${esc(r.kind)}</td><td>${esc(srcLabel(r.source))}</td>` +
+      `<td>${esc(unit)}</td><td class="hl2">${price} <span class="sm">/ ${esc(unit)}</span></td>` +
+      `<td>${list}</td><td>${disc}</td>` +
+      `<td class="l mono">${esc(r.model_id || '')}</td></tr>`;
+  }
+  h += '</tbody></table></div>';
+  h += '<div class="note" style="margin-top:10px">媒体模型按张、秒、步计价，<b>不与 token 单价直接比较</b>；上传比对时这类模型会标注「媒体计价」，不参与 token 最低价分析。</div>';
+  box.innerHTML = h;
+}
+
 /* ======================== 关注分组 ======================== */
 function renderWatch() {
   const box = $('watch');
@@ -924,8 +958,10 @@ function renderUpload() {
     const offCell2 = v => v == null ? '<span class="na">—</span>'
       : `<span class="pill ${offCls}" title="${esc(offTitle(m))}">${nf(v)}${o && o.src === 'openrouter' ? '<sup class="fb">OR</sup>' : ''}</span>`;
     const tags = (m._ai ? ` <span class="tag ai" title="由大模型补识别，请核对">AI${f.conf === 'low' ? '?' : ''}</span>` : '') +
-      (m._fuzzy ? ' <span class="tag" title="型号变体近似匹配，请人工核对">近似</span>' : '');
+      (m._fuzzy ? ' <span class="tag" title="型号变体近似匹配，请人工核对">近似</span>' : '') +
+      (m.has_media ? ' <span class="tag" title="按张/秒/步计价，未参与 token 比价">媒体计价</span>' : '');
     const nrow = Math.max(1, f.tiers.length);
+    const isMedia = !!m.has_media;
     h += `<tr><td class="l" rowspan="${nrow}"><span class="mname">${esc(m.name)}</span>${tags}<br>
       <span class="mven">${esc(m.vendor)} · 匹配 ${m.n_src} 源</span></td>`;
 
@@ -938,17 +974,17 @@ function renderUpload() {
       const fIn = t.in, fOut = t.out;
       const cmpIn = (fIn != null && mnIn != null && mnIn > 0) ? ((fIn - mnIn) / mnIn * 100) : null;
       const cmpOut = (fOut != null && mnOut != null && mnOut > 0) ? ((fOut - mnOut) / mnOut * 100) : null;
-      const cellIn = (fIn != null && mnIn != null)
+      const cellIn = isMedia ? '<span class="na">媒体计价</span>' : (fIn != null && mnIn != null)
         ? (mnIn === 0 ? '<span class="pill hi">本站 $0（限免）</span>'
           : fIn > mxIn ? `<span class="pill hi">高 ${cmpIn.toFixed(0)}%</span>`
           : fIn < mnIn ? `<span class="pill lo">低</span>`
             : `<span class="hl">${cmpIn.toFixed(0)}%</span>`) : '<span class="na">—</span>';
-      const cellOut = (fOut != null && mnOut != null)
+      const cellOut = isMedia ? '<span class="na">媒体计价</span>' : (fOut != null && mnOut != null)
         ? (mnOut === 0 ? '<span class="pill hi">本站 $0（限免）</span>'
           : fOut > mxOut ? `<span class="pill hi">高 ${cmpOut.toFixed(0)}%</span>`
           : fOut < mnOut ? `<span class="pill lo">低</span>`
             : `<span class="hl">${cmpOut.toFixed(0)}%</span>`) : '<span class="na">—</span>';
-      const rowHl = (fIn != null && mnIn != null && fIn > mnIn * 1.0001) ? ' class="hl"' : '';
+      const rowHl = (!isMedia && fIn != null && mnIn != null && fIn > mnIn * 1.0001) ? ' class="hl"' : '';
       const sub = { m, in: fIn, out: fOut, currency: f.currency, per: f.per, rawIn: f.rawIn,
         rawOut: f.rawOut, unit: f.unit, conf: f.conf, note: f.note, srcline: t.line,
         tier: t.tier };
@@ -959,10 +995,10 @@ function renderUpload() {
       h += `<td class="l">${tierName}</td>
         <td>${offCell2(offIn)}</td><td>${offCell2(offOut)}</td>
         <td class="${fIn != null && mnIn != null && fIn > mnIn ? 'hl' : ''}">${upVal(sub, 'in')}</td>
-        <td class="hl2">${nf(mnIn)}</td><td class="hl3">${nf(mxIn)}</td><td>${cellIn}</td>
+        <td class="hl2">${isMedia ? '—' : nf(mnIn)}</td><td class="hl3">${isMedia ? '—' : nf(mxIn)}</td><td>${cellIn}</td>
         <td class="${fOut != null && mnOut != null && fOut > mnOut ? 'hl' : ''}">${upVal(sub, 'out')}</td>
-        <td class="hl2">${nf(mnOut)}</td><td class="hl3">${nf(mxOut)}</td><td>${cellOut}</td></tr>`;
-      if (ti === 0 && fIn != null && mnIn != null)
+        <td class="hl2">${isMedia ? '—' : nf(mnOut)}</td><td class="hl3">${isMedia ? '—' : nf(mxOut)}</td><td>${cellOut}</td></tr>`;
+      if (!isMedia && ti === 0 && fIn != null && mnIn != null)
         curve.push({ name: m.name, up: fIn, min: mnIn, max: mxIn, off: offIn });
     });
   }
@@ -1034,6 +1070,7 @@ function switchTab(t) {
   document.querySelectorAll('.tab').forEach(x => x.classList.toggle('on', x.dataset.t === t));
   document.querySelectorAll('.pane').forEach(x => x.classList.toggle('on', x.id === 'p-' + t));
   if (t === 'watch') renderWatch();
+  if (t === 'media') renderMedia();
   if (t === 'trend') renderTrend();
   if (t === 'status') renderStatus();
 }
@@ -1181,9 +1218,10 @@ function buildAnalysis(rows, maxN) {
   const all = rows || S.uploadRows || [];
   const n = maxN || S.anMax || 12;
   const mains = mainModels(all);
-  const stat = { total: all.length, higher: 0, lower: 0, equal: 0, noCmp: 0, zero: 0,
+  const stat = { total: all.length, higher: 0, lower: 0, equal: 0, noCmp: 0, zero: 0, media: 0,
     deltas: [], worst: null };
   for (const f of all) {
+    if (f.m.has_media) { stat.media++; stat.noCmp++; continue; }
     const e = extremum(f.m, 'input');
     if (f.in == null || e.lo == null) { stat.noCmp++; continue; }
     if (!e.lo) { stat.zero++; continue; }            // 本站最低为 0（限免），百分无意义
@@ -1199,7 +1237,9 @@ function buildAnalysis(rows, maxN) {
   const L = [];
   const tierTotal = all.reduce((a, f) => a + (f.tiers ? f.tiers.length : 1), 0);
   const head = `共识别 ${all.length} 个模型（${tierTotal} 个价格档位），` +
-    `其中 ${mains.length} 个主模型。以下只对主模型逐条分析。`;
+    `其中 ${mains.length} 个主模型` +
+    (stat.media ? `（含 ${stat.media} 个媒体模型，按张/秒计价，未参与 token 比较）` : '') +
+    `。以下只对主模型逐条分析。`;
   L.push(head);
   const cmp = `与本站最低价相比：${stat.higher} 个偏高、${stat.equal} 个持平、${stat.lower} 个更低` +
     (stat.zero ? `、${stat.zero} 个本站最低为 $0（限免，无法算倍数）` : '') +
@@ -1209,6 +1249,15 @@ function buildAnalysis(rows, maxN) {
   const items = [];
   for (const f of list) {
     const m = f.m;
+    if (m.has_media) {
+      const my = `${f.in == null ? '—' : '$' + nf(f.in)} / ${f.out == null ? '—' : '$' + nf(f.out)}`;
+      items.push({
+        name: m.name,
+        lines: [`你的报价 ${my}`, '媒体模型按张/秒/步计价，未参与 token 最低价比较；请到「图像 / 视频」页查看同单位报价。'],
+        verdict: '', watch: !!m.watch, n_src: m.n_src,
+      });
+      continue;
+    }
     const ei = extremum(m, 'input'), eo = extremum(m, 'output');
     // 只有厂商官方价才能当「刊例价」算折扣；OpenRouter 兜底只是参考价。
     const isOfficial = !!(m.official && m.official.src === 'official');

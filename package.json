@@ -7,6 +7,7 @@
     "test": "npm run test:parsers && npm run test:llm && npm run test:smoke && npm run test:tier",
     "test:parsers": "node scripts/test_parsers.js",
     "test:llm": "node scripts/test_llm.js",
+    "test:media": "python3 scripts/test_media.py",
     "test:smoke": "node scripts/smoke.js",
     "test:tier": "node scripts/test_upload_tier.js",
     "test:official": "node scripts/test_official_col.js",

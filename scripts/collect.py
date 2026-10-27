@@ -7,6 +7,7 @@ Agent A - 模型价格采集器
 （硅基流动 SiliconFlow 以人民币 ¥/M tokens 计价，按当日汇率折算为 USD）
 """
 import json, re, sqlite3, sys, time, os, hashlib
+from collections import Counter
 from datetime import datetime, timezone, date
 import urllib.request, urllib.error
 
@@ -195,99 +196,158 @@ def pct_discount(final_price, list_price):
 
 
 # ------------------------------------------------------------ 1. OpenRouter
-# pricing 单位是 USD/token, 需 *1e6
+# pricing.prompt/completion 单位是 USD/token（需 *1e6）；pricing.image 是 USD/张，
+# 不要乘 1e6。输出模态含 image 的模型把 image 价一并记下来。
+def openrouter_row(m):
+    p = m.get("pricing") or {}
+    inp = f(p.get("prompt")); outp = f(p.get("completion"))
+    if inp is not None:  inp *= 1_000_000
+    if outp is not None: outp *= 1_000_000
+    cr = f(p.get("input_cache_read"));  cw = f(p.get("input_cache_write"))
+    if cr is not None: cr *= 1_000_000
+    if cw is not None: cw *= 1_000_000
+    mods = ((m.get("architecture") or {}).get("output_modalities") or [])
+    unit, unit_price = "token", None
+    img = f(p.get("image"))
+    if "image" in mods and img is not None:
+        unit, unit_price = "image", img
+    if inp is None and outp is None and unit_price is None:
+        return None
+    fam, ver = canonical(m.get("id", ""))
+    return dict(
+        source="openrouter", model_id=m.get("id", ""),
+        model_name=m.get("name") or m.get("id", ""),
+        family=fam, version=ver,
+        provider=(m.get("id", "").split("/")[0] if "/" in m.get("id", "") else ""),
+        input=inp, output=outp, cache_read=cr, cache_write=cw,
+        list_input=inp, list_output=outp,
+        discount=None,
+        context=(m.get("context_length") or None),
+        modality=(m.get("architecture") or {}).get("modality", ""),
+        unit=unit, unit_price=unit_price, list_unit_price=None, unit_discount=None,
+    )
+
+
 def collect_openrouter():
     raw = fetch("https://openrouter.ai/api/v1/models")
     data = json.loads(raw)["data"]
-    out = []
-    for m in data:
-        p = m.get("pricing") or {}
-        inp = f(p.get("prompt")); outp = f(p.get("completion"))
-        if inp is not None:  inp *= 1_000_000
-        if outp is not None: outp *= 1_000_000
-        cr = f(p.get("input_cache_read"));  cw = f(p.get("input_cache_write"))
-        if cr is not None: cr *= 1_000_000
-        if cw is not None: cw *= 1_000_000
-        if inp is None and outp is None:
-            continue
-        fam, ver = canonical(m.get("id", ""))
-        out.append(dict(
-            source="openrouter", model_id=m.get("id", ""),
-            model_name=m.get("name") or m.get("id", ""),
-            family=fam, version=ver,
-            provider=(m.get("id", "").split("/")[0] if "/" in m.get("id", "") else ""),
-            input=inp, output=outp, cache_read=cr, cache_write=cw,
-            list_input=inp, list_output=outp,
-            discount=None,
-            context=(m.get("context_length") or None),
-            modality=(m.get("architecture") or {}).get("modality", ""),
-        ))
+    out = [r for r in (openrouter_row(m) for m in data) if r]
     return out, len(data)
 
 
 # ------------------------------------------------------------ 2. Fireworks
-# cost 已经是 USD/1M
+# token 价：inputTokenPrice 等，USD/1M；图片：unitPrice 或 stepPrice；
+# 视频/语音：durationPrice（按秒）。
+def fireworks_row(m):
+    c = m.get("cost") or {}
+    typ = (m.get("type") or "").lower()
+    inp = f(c.get("inputTokenPrice"))
+    if inp is None:
+        inp = f(c.get("inputTokenUncachedPrice"))
+    if inp is None or inp == 0:
+        tp = f(c.get("tokenPrice"))
+        if tp is not None:
+            inp = tp
+    outp = f(c.get("outputTokenPrice"))
+    unit, unit_price = "token", None
+    if typ == "image":
+        up = f(c.get("unitPrice"))
+        if up is None or up == 0:
+            sp = f(c.get("stepPrice"))
+            if sp is not None and sp > 0:
+                up, unit = sp, "step"
+            else:
+                unit = "image"
+        else:
+            unit = "image"
+        if up is not None:
+            unit_price = up
+    elif "video" in typ:
+        dp = f(c.get("durationPrice"))
+        if dp is not None:
+            unit, unit_price = "second", dp
+    elif typ in ("speech-to-text", "audio", "transcription"):
+        dp = f(c.get("durationPrice"))
+        if dp is not None:
+            unit, unit_price = "second", dp
+    if unit != "token":
+        if inp == 0:
+            inp = None
+        if outp == 0:
+            outp = None
+    if inp is None and outp is None and unit_price is None:
+        return None
+    mid = m.get("id") or (m.get("name", "").split("/")[-1])
+    fam, ver = canonical(mid)
+    return dict(
+        source="fireworks", model_id=mid,
+        model_name=m.get("title") or mid,
+        family=fam, version=ver,
+        provider=(m.get("provider") or {}).get("name", ""),
+        input=inp, output=outp,
+        cache_read=f(c.get("inputTokenCachedPrice")), cache_write=None,
+        list_input=inp, list_output=outp,
+        discount=None,
+        context=m.get("contextLength"),
+        modality=m.get("type", ""),
+        unit=unit, unit_price=unit_price, list_unit_price=None, unit_discount=None,
+    )
+
+
 def collect_fireworks():
     raw = fetch("https://app.fireworks.ai/api/models")
     data = json.loads(raw)
-    out = []
-    for m in data:
-        c = m.get("cost") or {}
-        inp = f(c.get("inputTokenPrice"))
-        if inp is None:                      # 注意：0 是有效限免价，不能用 or 回退
-            inp = f(c.get("inputTokenUncachedPrice"))
-        outp = f(c.get("outputTokenPrice"))
-        if inp is None and outp is None:
-            continue
-        mid = m.get("id") or (m.get("name", "").split("/")[-1])
-        fam, ver = canonical(mid)
-        out.append(dict(
-            source="fireworks", model_id=mid,
-            model_name=m.get("title") or mid,
-            family=fam, version=ver,
-            provider=(m.get("provider") or {}).get("name", ""),
-            input=inp, output=outp,
-            cache_read=f(c.get("inputTokenCachedPrice")), cache_write=None,
-            list_input=inp, list_output=outp,
-            discount=None,
-            context=m.get("contextLength"),
-            modality=m.get("type", ""),
-        ))
+    out = [r for r in (fireworks_row(m) for m in data) if r]
     return out, len(data)
 
 
 # ------------------------------------------------------------ 3. Wokey
 # 页面内嵌 <script id="wokey-models-page-data" type="application/json">
+# token 价在 input_tokens/output_tokens；图片价在 output_images SKU。
+def wokey_row(mdl):
+    skus = {}
+    for s in (mdl.get("pricing_skus") or []):
+        skus.setdefault(s.get("meter"), []).append(s)
+
+    def best(meter, key="price_usd"):
+        vals = [f(s.get(key)) for s in skus.get(meter, []) if f(s.get(key)) is not None]
+        return min(vals) if vals else None
+
+    inp, outp = best("input_tokens"), best("output_tokens")
+    img = best("output_images")
+    mods = ((mdl.get("architecture") or {}).get("output_modalities") or [])
+    unit, unit_price = "token", None
+    if img is not None and ((not inp and not outp) or "image" in mods):
+        unit, unit_price = "image", img
+        inp = outp = None
+    if inp is None and outp is None and unit_price is None:
+        return None
+    li = best("input_tokens", "reference_price_usd")
+    lo = best("output_tokens", "reference_price_usd")
+    fam, ver = canonical(mdl.get("id", ""))
+    return dict(
+        source="wokey", model_id=mdl.get("id", ""),
+        model_name=mdl.get("name") or mdl.get("id", ""),
+        family=fam, version=ver,
+        provider=mdl.get("owned_by", ""),
+        input=inp, output=outp,
+        cache_read=best("cache_read_tokens"),
+        cache_write=best("cache_write_tokens") or best("cache_write_5m_tokens"),
+        list_input=li, list_output=lo,
+        discount=(pct_discount(inp, li) if unit == "token" else None),
+        context=(mdl.get("architecture") or {}).get("context_length") or None,
+        modality=(mdl.get("architecture") or {}).get("modality", ""),
+        unit=unit, unit_price=unit_price, list_unit_price=None, unit_discount=None,
+    )
+
+
 def collect_wokey():
     html = fetch("https://wokey.ai/models")
     m = re.search(r'<script id="wokey-models-page-data"[^>]*>(.*?)</script>', html, re.S)
     if not m:
         raise RuntimeError("wokey: 未找到内嵌数据块")
     data = json.loads(m.group(1))["data"]
-    out = []
-    for mdl in data:
-        skus = {s.get("meter"): s for s in (mdl.get("pricing_skus") or [])}
-        def get(meter, key="price_usd"):
-            s = skus.get(meter)
-            return f((s or {}).get(key))
-        inp, outp = get("input_tokens"), get("output_tokens")
-        if inp is None and outp is None:
-            continue
-        li, lo = get("input_tokens", "reference_price_usd"), get("output_tokens", "reference_price_usd")
-        fam, ver = canonical(mdl.get("id", ""))
-        out.append(dict(
-            source="wokey", model_id=mdl.get("id", ""),
-            model_name=mdl.get("name") or mdl.get("id", ""),
-            family=fam, version=ver,
-            provider=mdl.get("owned_by", ""),
-            input=inp, output=outp,
-            cache_read=get("cache_read_tokens"),
-            cache_write=get("cache_write_tokens") or get("cache_write_5m_tokens"),
-            list_input=li, list_output=lo,
-            discount=pct_discount(inp, li),
-            context=(mdl.get("architecture") or {}).get("context_length") or None,
-            modality=(mdl.get("architecture") or {}).get("modality", ""),
-        ))
+    out = [r for r in (wokey_row(mdl) for mdl in data) if r]
     return out, len(data)
 
 
@@ -314,6 +374,56 @@ def _extract_json_array(s, start):
     return None
 
 
+def ci_row(m):
+    """CheaperInference：token 模型走 input/output；图片/视频走 unitPriceUsd。"""
+    unit = (m.get("unit") or "").strip().lower()
+    fam, ver = canonical(m.get("id", ""))
+    ctx = m.get("contextLength")
+    mod = f"{m.get('type','')}/{m.get('group','')}"
+    if unit in ("image", "video"):
+        up = f(m.get("unitPriceUsd"))
+        lup = f(m.get("referenceUnitPriceUsd"))
+        disc = f(m.get("discountPercent"))
+        if bool(m.get("free")) and up is None:
+            up = 0.0
+        if up is None:
+            return None
+        if m.get("listPriceKnown") is False:
+            lup = None
+        return dict(
+            source="cheaperinference", model_id=m.get("id", ""),
+            model_name=m.get("label") or m.get("id", ""),
+            family=fam, version=ver,
+            provider=m.get("providerLabel") or "",
+            input=None, output=None, cache_read=None, cache_write=None,
+            list_input=None, list_output=None, discount=disc,
+            context=ctx, modality=mod,
+            unit=unit, unit_price=up, list_unit_price=lup,
+            unit_discount=(disc if disc is not None else pct_discount(up, lup)),
+        )
+    inp, outp = f(m.get("ourInputPerM")), f(m.get("ourOutputPerM"))
+    li, lo = f(m.get("listInputPerM")), f(m.get("listOutputPerM"))
+    if inp is None and outp is None:
+        return None
+    cr_mult = f(m.get("cacheReadInputMultiplier"))
+    cw_mult = f(m.get("cacheWriteInputMultiplier"))
+    if m.get("listPriceKnown") is False:
+        li = lo = None
+    return dict(
+        source="cheaperinference", model_id=m.get("id", ""),
+        model_name=m.get("label") or m.get("id", ""),
+        family=fam, version=ver,
+        provider=m.get("providerLabel") or "",
+        input=inp, output=outp,
+        cache_read=(round(inp * cr_mult, 6) if (inp is not None and cr_mult is not None) else None),
+        cache_write=(round(inp * cw_mult, 6) if (inp is not None and cw_mult is not None) else None),
+        list_input=li, list_output=lo,
+        discount=f(m.get("discountPercent")),
+        context=ctx, modality=mod,
+        unit="token", unit_price=None, list_unit_price=None, unit_discount=None,
+    )
+
+
 def collect_cheaperinference():
     html = fetch("https://platform.cheaperinference.com/markets")
     chunks = re.findall(r'self\.__next_f\.push\(\[1,"(.*?)"\]\)', html, re.S)
@@ -326,30 +436,7 @@ def collect_cheaperinference():
         raise RuntimeError("cheaperinference: 未找到 models 数组")
     arr = _extract_json_array(blob, idx + len('"models":') )
     data = json.loads(arr)
-    out = []
-    for m in data:
-        inp, outp = f(m.get("ourInputPerM")), f(m.get("ourOutputPerM"))
-        li, lo = f(m.get("listInputPerM")), f(m.get("listOutputPerM"))
-        if inp is None and outp is None:
-            continue
-        cr_mult = f(m.get("cacheReadInputMultiplier"))
-        cw_mult = f(m.get("cacheWriteInputMultiplier"))
-        fam, ver = canonical(m.get("id", ""))
-        if m.get("listPriceKnown") is False:
-            li = lo = None
-        out.append(dict(
-            source="cheaperinference", model_id=m.get("id", ""),
-            model_name=m.get("label") or m.get("id", ""),
-            family=fam, version=ver,
-            provider=m.get("providerLabel") or "",
-            input=inp, output=outp,
-            cache_read=(round(inp * cr_mult, 6) if (inp is not None and cr_mult is not None) else None),
-            cache_write=(round(inp * cw_mult, 6) if (inp is not None and cw_mult is not None) else None),
-            list_input=li, list_output=lo,
-            discount=f(m.get("discountPercent")),
-            context=m.get("contextLength"),
-            modality=f"{m.get('type','')}/{m.get('group','')}",
-        ))
+    out = [r for r in (ci_row(m) for m in data) if r]
     return out, len(data)
 
 
@@ -467,8 +554,51 @@ def collect_siliconflow():
     return rows, ref_n + cn_n, extra
 
 
+def siliconflow_cn_row(m, rate):
+    """硅基流动官网：/ M Tokens 走 token；/ Image、/ Video、/ M UTF-8 bytes 记录单位价。"""
+    pu = (m.get("priceUnit") or "").strip()
+    if pu not in ("/ M Tokens", "/ Image", "/ Video", "/ M UTF-8 bytes", ""):
+        return None
+    if (m.get("status") or "normal") != "normal":
+        return None
+    mid = m.get("modelName") or m.get("modelId") or ""
+    fam, ver = canonical(mid)
+    base = dict(
+        source="siliconflow", model_id=mid,
+        model_name=m.get("DisplayName") or mid.split("/")[-1],
+        family=fam, version=ver,
+        provider=m.get("mf") or "",
+        context=(m.get("contextLen") or None),
+        modality=f"{m.get('type','')}/{m.get('subType','')}",
+    )
+    if pu == "/ M Tokens":
+        pr = {p.get("specification"): f(p.get("price"))
+              for p in (m.get("pricing") or [])}
+        inp, outp = pr.get("prompt"), pr.get("completion")
+        if inp is None and outp is None:
+            return None
+        if inp is not None:  inp = round(inp * rate, 8)
+        if outp is not None: outp = round(outp * rate, 8)
+        base.update(input=inp, output=outp, cache_read=None, cache_write=None,
+                    list_input=None, list_output=None, discount=None,
+                    unit="token", unit_price=None, list_unit_price=None, unit_discount=None)
+        return base
+    price = f(m.get("price"))
+    if price is None:
+        return None
+    cur = (m.get("currency") or "¥").strip()
+    if cur in ("¥", "￥", "CNY", "RMB"):
+        price = round(price * rate, 8)
+    unit = {"/ Image": "image", "/ Video": "video",
+            "/ M UTF-8 bytes": "utf8_mb", "": "unknown"}[pu]
+    base.update(input=None, output=None, cache_read=None, cache_write=None,
+                list_input=None, list_output=None, discount=None,
+                unit=unit, unit_price=price, list_unit_price=None, unit_discount=None)
+    return base
+
+
 def _collect_siliconflow_cn():
-    """原实现：直接读 siliconflow.cn/models 的内嵌数据（人民币 ¥/M tokens）。"""
+    """直接读 siliconflow.cn/models 的内嵌数据（人民币计价，按当日汇率折算）。"""
     html = fetch("https://www.siliconflow.cn/models")
     chunks = re.findall(r'self\.__next_f\.push\(\[1,"(.*?)"\]\)', html, re.S)
     blob = ""
@@ -480,34 +610,7 @@ def _collect_siliconflow_cn():
         raise RuntimeError("siliconflow: 未找到 models 数组")
     data = json.loads(_extract_json_array(blob, idx + len('"data":')))
     rate, fxsrc = cny_to_usd()
-    out = []
-    for m in data:
-        # 只保留按 token 计费的文本模型；/ Image、/ Video、/ M UTF-8 bytes 单位不一致，跳过
-        if (m.get("priceUnit") or "").strip() != "/ M Tokens":
-            continue
-        if (m.get("status") or "normal") != "normal":
-            continue
-        pr = {p.get("specification"): f(p.get("price"))
-              for p in (m.get("pricing") or [])}
-        inp, outp = pr.get("prompt"), pr.get("completion")
-        if inp is None and outp is None:
-            continue
-        if inp is not None:  inp = round(inp * rate, 8)
-        if outp is not None: outp = round(outp * rate, 8)
-        mid = m.get("modelName") or m.get("modelId") or ""
-        fam, ver = canonical(mid)
-        out.append(dict(
-            source="siliconflow", model_id=mid,
-            model_name=m.get("DisplayName") or mid.split("/")[-1],
-            family=fam, version=ver,
-            provider=m.get("mf") or "",
-            input=inp, output=outp,
-            cache_read=None, cache_write=None,
-            list_input=None, list_output=None,
-            discount=None,
-            context=(m.get("contextLen") or None),
-            modality=f"{m.get('type','')}/{m.get('subType','')}",
-        ))
+    out = [r for r in (siliconflow_cn_row(m, rate) for m in data) if r]
     return out, len(data), dict(rate=rate, fxsrc=fxsrc)
 
 
@@ -539,6 +642,10 @@ CREATE TABLE IF NOT EXISTS prices (
   discount REAL,
   context INTEGER,
   modality TEXT,
+  unit TEXT DEFAULT 'token',
+  unit_price REAL,
+  list_unit_price REAL,
+  unit_discount REAL,
   UNIQUE(snapshot_date, source, model_id)
 );
 CREATE INDEX IF NOT EXISTS ix_prices_family ON prices(family);
@@ -561,6 +668,16 @@ CREATE TABLE IF NOT EXISTS alerts (
 def init_db():
     con = sqlite3.connect(DB)
     con.executescript(SCHEMA)
+    # 旧库升级：补上计价单位字段（默认 token）
+    cols = {r[1] for r in con.execute("PRAGMA table_info(prices)")}
+    for name, decl in (
+        ("unit", "TEXT DEFAULT 'token'"),
+        ("unit_price", "REAL"),
+        ("list_unit_price", "REAL"),
+        ("unit_discount", "REAL"),
+    ):
+        if name not in cols:
+            con.execute(f"ALTER TABLE prices ADD COLUMN {name} {decl}")
     return con
 
 
@@ -589,6 +706,10 @@ def main():
                 r["snapshot_date"] = today
                 r["loose"] = loose_key(r["family"])
                 r["variant"] = detect_variant(r["model_id"], r["family"])
+                r.setdefault("unit", "token")
+                r.setdefault("unit_price", None)
+                r.setdefault("list_unit_price", None)
+                r.setdefault("unit_discount", None)
                 if r["variant"] in EXCLUDE_VARIANTS:
                     continue          # batch/free 是不同计费模式，不参与比价
                 kept.append(r)
@@ -618,12 +739,15 @@ def main():
     for r in all_rows:
         con.execute("""INSERT OR REPLACE INTO prices
           (snapshot_date,source,model_id,model_name,family,loose,variant,version,provider,
-           input,output,cache_read,cache_write,list_input,list_output,discount,context,modality)
-          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+           input,output,cache_read,cache_write,list_input,list_output,discount,context,modality,
+           unit,unit_price,list_unit_price,unit_discount)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
           (r["snapshot_date"], r["source"], r["model_id"], r["model_name"], r["family"],
            r["loose"], r["variant"], r["version"], r["provider"], r["input"], r["output"],
            r["cache_read"], r["cache_write"], r["list_input"], r["list_output"],
-           r["discount"], r["context"], r["modality"]))
+           r["discount"], r["context"], r["modality"],
+           r.get("unit") or "token", r.get("unit_price"),
+           r.get("list_unit_price"), r.get("unit_discount")))
     con.commit()
 
     # 原始快照留档：只替换本次成功的源，失败源/未运行的源保留当天已有数据。
@@ -651,6 +775,10 @@ def main():
                   fh, ensure_ascii=False, indent=2)
 
     print(f"\n合计写入 {len(all_rows)} 条 -> {DB}")
+    units = Counter((r.get("unit") or "token") for r in all_rows)
+    print(f"计价单位分布: {dict(units)}")
+    media_n = sum(1 for r in all_rows if (r.get("unit") or "token") != "token")
+    print(f"媒体计价行（图片/视频/语音等）: {media_n}")
     con.close()
     return 0 if all(s["status"] == "ok" for s in summary) else 1
 

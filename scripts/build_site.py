@@ -225,6 +225,14 @@ def r6(x):
     return None if x is None else round(float(x), 8)   # 保留足够精度，避免与库中值产生伪差异
 
 
+def gv(row, key, default=None):
+    """兼容旧库：列不存在时返回默认值。"""
+    try:
+        return row[key]
+    except (IndexError, KeyError):
+        return default
+
+
 def tokenkey(s):
     """语序不敏感的匹配键：拆分 token 后排序拼接。
     解决 `Claude-5-fable`（上传）与 `claude-fable-5`（站内）这类语序差异。
@@ -273,6 +281,10 @@ def main():
             cache_read=r6(r["cache_read"]), cache_write=r6(r["cache_write"]),
             list_input=r6(r["list_input"]), list_output=r6(r["list_output"]),
             discount=r6(r["discount"]), context=r["context"],
+            unit=gv(r, "unit", "token") or "token",
+            unit_price=r6(gv(r, "unit_price")),
+            list_unit_price=r6(gv(r, "list_unit_price")),
+            unit_discount=r6(gv(r, "unit_discount")),
         )
         if cur is None:
             g["by_source"][src] = {"best": rec, "versions": [rec]}
@@ -302,14 +314,22 @@ def main():
                     break
         prices = {}
         vals_in, vals_out = [], []
+        kind = kind_of(loose, g["modality"])
         for s in ("openrouter", "fireworks", "wokey", "cheaperinference", "siliconflow"):
             if s not in by_src:
                 continue
             b = by_src[s]["best"]
+            # 旧数据兼容：媒体模型的 token 价若是 0（实际是按张/秒计价），不要当免费
+            if kind != "文本" and (b.get("unit") or "token") == "token" \
+                    and b["input"] == 0 and b["output"] in (0, None):
+                b = dict(b, input=None, output=None)
+                by_src[s]["best"] = b
             prices[s] = dict(b, versions=by_src[s]["versions"])
             if b["input"] is not None:  vals_in.append(b["input"])
             if b["output"] is not None: vals_out.append(b["output"])
         nver = sum(len(v["versions"]) for v in by_src.values())
+        has_media = any((it.get("unit") or "token") != "token" and it.get("unit_price") is not None
+                        for p in prices.values() for it in (p.get("versions") or [p]))
 
         # ---- 模型官网价格：官方 > 自动抓取 > OpenRouter 兜底 ----
         off = OFFICIAL.get(loose)
@@ -343,9 +363,10 @@ def main():
             loose=loose, name=disp, vendor=vendor,
             keys=sorted(keys),
             region="cn" if vendor in CN_VENDORS else "intl",
-            kind=kind_of(loose, g["modality"]),
+            kind=kind,
             sources=list(prices.keys()), n_src=len(prices), n_ver=nver,
             prices=prices, official=official,
+            has_media=has_media,
             min_input=(min(vals_in) if vals_in else None),
             max_input=(max(vals_in) if vals_in else None),
             min_output=(min(vals_out) if vals_out else None),
@@ -354,6 +375,30 @@ def main():
         ))
 
     models.sort(key=lambda m: (not m["watch"], -m["n_src"], m["loose"]))
+
+    # ---------- 媒体价格（按张/秒/步/… 计价，独立于 token） ----------
+    media_map = {}
+    for m in models:
+        for sid, p in m["prices"].items():
+            for it in (p.get("versions") or [p]):
+                u = it.get("unit") or "token"
+                if u == "token" or it.get("unit_price") is None:
+                    continue
+                key = (m["loose"], sid, u)
+                rec = dict(
+                    loose=m["loose"], name=m["name"], vendor=m["vendor"], kind=m["kind"],
+                    source=sid, unit=u, price=r6(it.get("unit_price")),
+                    list_price=r6(it.get("list_unit_price")), discount=r6(it.get("unit_discount")),
+                    model_id=it.get("model_id"), context=it.get("context"),
+                    version=it.get("version") or "",
+                )
+                cur = media_map.get(key)
+                if cur is None or (rec["price"] is not None
+                                   and (cur["price"] is None or rec["price"] < cur["price"])):
+                    media_map[key] = rec
+    media = sorted(media_map.values(),
+                   key=lambda x: (x["name"].lower(), x["unit"],
+                                  x["price"] if x["price"] is not None else 1e18))
 
     # ---------- 历史序列 ----------
     hist_rows = c.execute(
@@ -384,9 +429,10 @@ def main():
         watch=[dict(region=reg, group=grp, items=[dict(loose=k, name=n) for k, n in items])
                for reg, grp, items in WATCH],
         models=models,
+        media=media,
         history=history,
         runs=runs,
-        stats=dict(total=len(models), by_source={
+        stats=dict(total=len(models), media=len(media), by_source={
             r["source"]: r["n"] for r in c.execute(
                 "SELECT source,COUNT(*) n FROM prices WHERE snapshot_date=? GROUP BY source", (latest,))}),
         official_meta=dict(
