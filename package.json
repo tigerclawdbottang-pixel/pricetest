@@ -1,0 +1,20 @@
+{
+  "name": "modelprice",
+  "version": "1.0.0",
+  "private": true,
+  "description": "LLM 模型价格比较平台（测试用依赖，运行时零第三方依赖）",
+  "scripts": {
+    "test": "npm run test:parsers && npm run test:llm && npm run test:smoke && npm run test:tier",
+    "test:parsers": "node scripts/test_parsers.js",
+    "test:llm": "node scripts/test_llm.js",
+    "test:media": "python3 scripts/test_media.py",
+    "test:smoke": "node scripts/smoke.js",
+    "test:tier": "node scripts/test_upload_tier.js",
+    "test:official": "node scripts/test_official_col.js",
+    "test:match": "node scripts/test_upload_match.js",
+    "test:e2e": "node scripts/test_ai_e2e.js"
+  },
+  "devDependencies": {
+    "jsdom": "^25.0.0"
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "_comment": "把本文件复制为 llm_key.json 并填入你的 key，然后重新运行 python3 scripts/build_site.py —— 密钥会被混淆后写进 index.html，打开页面即可直接使用 AI 功能。llm_key.json 本身会被 git 忽略、也不会进 GitHub 包。",
+  "provider": "deepseek",
+  "endpoint": "https://api.deepseek.com/v1/chat/completions",
+  "model": "deepseek-chat",
+  "mode": "direct",
+  "key": ""
+}

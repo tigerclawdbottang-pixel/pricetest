@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<meta name="theme-color" content="#08080A">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%237C6CF6'/%3E%3Ccircle cx='16' cy='16' r='8.5' fill='none' stroke='%23fff' stroke-width='2'/%3E%3C/svg%3E">
+<title>Token Market Insight</title>
+<style>/*__CSS__*/</style>
+</head>
+<body>
+<a class="skip" href="#main">跳到主内容</a>
+<header>
+  <div class="hd">
+    <div class="logo">
+      <svg class="logomark" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
+        <defs>
+          <linearGradient id="orMark" x1="2" y1="2" x2="30" y2="30" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#7C6CF6"/><stop offset=".55" stop-color="#F97316"/><stop offset="1" stop-color="#EC4899"/>
+          </linearGradient>
+        </defs>
+        <circle cx="16" cy="16" r="14" fill="url(#orMark)"/>
+        <circle cx="16" cy="16" r="8.5" fill="none" stroke="#fff" stroke-width="2" opacity=".92"/>
+        <circle cx="16" cy="7.5" r="2.1" fill="#fff"/>
+        <circle cx="9.5" cy="20" r="2.1" fill="#fff"/>
+        <circle cx="22.5" cy="20" r="2.1" fill="#fff"/>
+      </svg>
+      <span class="logo-text">
+        <span class="wordmark">Token Market Insight</span>
+        <span class="logo-sub">LLM PRICE INTELLIGENCE</span>
+      </span>
+    </div>
+    <div class="spacer"></div>
+    <span class="date"><span class="date-lbl">DATA</span> <b id="updated">—</b></span>
+    <button class="icon-btn" id="exportBtn" aria-label="导出 CSV" title="导出 CSV">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/>
+      </svg>
+    </button>
+    <button class="icon-btn" id="theme" aria-label="切换亮/暗主题" title="切换亮/暗主题">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+        <circle cx="12" cy="12" r="8.5"/><path d="M12 3.5a8.5 8.5 0 0 1 0 17z" fill="currentColor" stroke="none" opacity=".9"/>
+      </svg>
+    </button>
+  </div>
+  <div class="tabs">
+    <div class="tab on" data-t="compare">总览对比</div>
+    <div class="tab" data-t="watch">关注模型</div>
+    <div class="tab" data-t="media">图像 / 视频</div>
+    <div class="tab" data-t="trend">价格走势</div>
+    <div class="tab" data-t="upload">上传比对</div>
+    <div class="tab" data-t="status">数据源</div>
+  </div>
+</header>
+
+<main id="main" class="wrap">
+
+<!-- ============ 总览对比 ============ -->
+<div class="pane on" id="p-compare">
+  <div class="pagehead">
+    <div>
+      <h1>Models</h1>
+      <p>Compare LLM API pricing across five providers · 单位统一为 USD / 1M tokens</p>
+    </div>
+    <div class="meta">
+      <span class="stat-chip"><span class="live"></span>5 providers</span>
+      <span class="cnt" id="cnt"></span>
+    </div>
+  </div>
+  <section class="rank-panel" aria-label="Top models">
+    <div class="rank-head">
+      <div><h2>Top models</h2><p>Market share · 站内来源覆盖代理（当前数据不含真实调用量）</p></div>
+      <span class="tag">Top 10</span>
+    </div>
+    <div class="rank-body">
+      <div class="rank-list" id="rankList"></div>
+      <div class="rank-chart" id="rankChart"></div>
+    </div>
+  </section>
+  <div class="bar">
+    <label class="search">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+        <circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2"/>
+      </svg>
+      <input class="inp" id="q" placeholder="搜索模型名 / 厂商…">
+    </label>
+    <select class="inp" id="metric"></select>
+    <select class="inp" id="region">
+      <option value="all">全部地区</option><option value="intl">国际</option><option value="cn">国产</option>
+    </select>
+    <select class="inp" id="kind">
+      <option value="文本">仅文本模型</option><option value="all">全部类型</option>
+      <option value="图像生成">图像生成</option><option value="向量">向量/Embedding</option>
+      <option value="音频">音频</option><option value="视频">视频</option>
+    </select>
+    <select class="inp" id="minSrc">
+      <option value="2">≥2 个源（可比对）</option><option value="1">≥1 个源</option>
+      <option value="3">≥3 个源</option><option value="4">≥4 个源</option>
+      <option value="5">5 个源全有</option>
+    </select>
+    <span id="srcChips" class="row"></span>
+  </div>
+  <div class="note">价格为 <b>USD / 1M tokens</b>。绿色 = 该模型中最低价，红色 = 最高价。
+    <b>模型官网价格</b>列（虚线框）取厂商官方定价页，作为基准参考、不参与红绿着色；
+    标注 <sup style="font-size:9px">OR</sup> 表示未检索到官网价、已回退为 <b>OpenRouter</b> 发布价（鼠标悬停可看来源链接与核对日期）。
+    点击任意行展开全指标与全部版本明细；batch / free 等非标准计费变体已排除。
+    模型命名以 <b>OpenRouter</b> 为准。</div>
+  <div class="tw" id="tbl"></div>
+  <div id="detail" style="display:none;margin-top:14px"></div>
+  <div class="sec">各源价格对比 <span class="tag" id="topTag">Top 10 · 输入价</span></div>
+  <div class="grid g4" id="cards"></div>
+  <div class="chartbox" style="margin-top:12px"><h3 id="chartTitle">Top 10 模型 · 各源输入价</h3><div id="chart"></div></div>
+  <div class="tw" id="top10" style="margin-top:12px;max-height:none"></div>
+</div>
+
+<!-- ============ 图像 / 视频 ============ -->
+<div class="pane" id="p-media">
+  <div class="note">图像 / 视频模型按 <b>张、秒、步</b> 等媒体单位计价，与 token 单价分开比较；
+    人民币源已按当日汇率折算为 USD。Seedance / Kling / Veo / Flux / Wan 等生成模型在这里查看。</div>
+  <div id="media"></div>
+</div>
+
+<!-- ============ 关注模型 ============ -->
+<div class="pane" id="p-watch">
+  <div class="note">国际：Claude / Gemini / GPT 全系列；国产：DeepSeek、Kimi、GLM、Qwen、MiniMax。
+    下表为各源 <b>输入价</b> 横向对比，绿色最低、红色最高。</div>
+  <div id="watch"></div>
+</div>
+
+<!-- ============ 走势 ============ -->
+<div class="pane" id="p-trend">
+  <div class="bar">
+    <select class="inp" id="trendSrc"></select>
+    <select class="inp" id="trendModel" multiple size="6" style="min-width:280px;height:130px"></select>
+    <span class="cnt" id="trendNote"></span>
+  </div>
+  <div class="chartbox"><h3 id="trendTitle">价格走势</h3><div id="trend"></div>
+    <div class="sm" style="color:var(--tx3);margin-top:6px">按住 Ctrl/⌘ 可多选模型；纵轴为该源当日最低输入价 (USD/1M)。</div>
+  </div>
+</div>
+
+<!-- ============ 上传比对 ============ -->
+<div class="pane" id="p-upload">
+  <div class="note">上传你的报价单（<b>.xlsx / .xlsm / .docx / .csv</b>），无需固定格式 —— 自动识别模型名与价格列，
+    并与本站收集的五源价格对比。上传后会<b>自动进行 AI 完整读取</b>（可在下方关闭），规则结果保留作兜底。
+    你的价格高于本站最低价时，单元格以 <b>黄色高亮</b> 标出。</div>
+  <div class="drop" id="drop">
+    <svg class="drop-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M12 16V4"/><path d="m7 9 5-5 5 5"/><path d="M5 20h14"/>
+    </svg>
+    <div class="drop-title">点击选择文件，或拖拽到此处</div>
+    <div class="drop-sub">支持 Excel (.xlsx/.xlsm)、Word (.docx)、CSV / TSV</div>
+    <input type="file" id="file" multiple accept=".xlsx,.xlsm,.docx,.doc,.csv,.tsv,.txt" style="display:none">
+  </div>
+  <div class="cnt" id="upStatus" style="margin:10px 0"></div>
+  <div id="upSheets"></div>
+  <div class="row" style="margin:10px 0;gap:8px">
+    <button class="btn primary" id="aiFullBtn">
+      <svg class="bi" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="m12 3 1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 16v4"/><path d="M17 18h4"/>
+      </svg>
+      AI 完整读取
+    </button>
+    <label class="sm check"><input type="checkbox" id="aiAuto" checked> 上传后自动完整读取</label>
+    <span class="cnt" id="aiFullNote"></span>
+    <button class="btn sm" id="aiBtn">AI 补识别（仅漏行）</button>
+    <button class="btn sm" id="aiCfgBtn">
+      <svg class="bi" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+        <path d="M4 7h16M4 12h16M4 17h16"/><circle cx="9" cy="7" r="2" fill="currentColor" stroke="none"/><circle cx="15" cy="12" r="2" fill="currentColor" stroke="none"/><circle cx="7" cy="17" r="2" fill="currentColor" stroke="none"/>
+      </svg>
+      AI 设置
+    </button>
+    <select class="inp" id="aiScope" style="max-width:220px">
+      <option value="miss">只补未识别的行（省钱）</option>
+      <option value="all">AI 重跑全部行</option>
+    </select>
+    <span class="cnt" id="aiNote"></span>
+  </div>
+  <div id="aiCfg" style="display:none" class="chartbox">
+    <h3>AI 设置 <span class="tag">可选 · 不用也能正常比价</span></h3>
+    <div class="sm" style="color:var(--tx3);margin-bottom:10px">
+      规则引擎先跑；<b>AI 完整读取</b>会把整张工作表（含表头）发送给模型，按行消耗 token，
+      返回模型名、规格、目录价/折后价与单位；<b>汇率、折扣、比价仍由本地计算</b>。
+      规则结果会保留作兜底。公开分享前请移除内置密钥。
+    </div>
+    <div class="row" style="gap:14px">
+      <label class="sm"><input type="radio" name="aimode" value="proxy" checked> 本地代理（推荐）</label>
+      <label class="sm"><input type="radio" name="aimode" value="direct"> 浏览器直连</label>
+    </div>
+    <div class="row" style="margin-top:10px;gap:8px">
+      <span class="sm" style="width:76px">代理地址</span>
+      <input class="inp" id="aiProxy" style="flex:1" placeholder="http://127.0.0.1:8787/extract">
+    </div>
+    <div class="row" style="margin-top:8px;gap:8px">
+      <span class="sm" style="width:76px">服务商</span>
+      <select class="inp" id="aiProvider" style="min-width:200px"></select>
+      <span class="sm" style="width:40px">模型</span>
+      <input class="inp" id="aiModel" style="flex:1" placeholder="模型名">
+    </div>
+    <div class="row" style="margin-top:8px;gap:8px">
+      <span class="sm" style="width:76px">接口地址</span>
+      <input class="inp" id="aiEndpoint" style="flex:1" placeholder="https://.../v1/chat/completions">
+    </div>
+    <div class="row" style="margin-top:8px;gap:8px">
+      <span class="sm" style="width:76px">API Key</span>
+      <input class="inp" id="aiKey" type="password" style="flex:1" placeholder="仅保存在本机 localStorage，永不写入导出的 HTML">
+    </div>
+    <div class="row" style="margin-top:10px;gap:8px">
+      <button class="btn sm" id="aiSave">保存</button>
+      <button class="btn sm" id="aiTest">测试连接</button>
+      <span class="cnt" id="aiCfgNote"></span>
+    </div>
+    <div class="sm" style="color:var(--tx3);margin-top:10px">
+      <b>最省事的用法</b>：双击项目里的 <span class="mono">scripts/start_ai.command</span>
+      —— 它会自动拉起代理并打开本页面，密钥只存在本机的
+      <span class="mono">~/.modelprice_llm_key</span>，不会写进页面、也不会进 git。<br>
+      或手动启动代理：<br>
+      <span class="mono">python3 scripts/llm_proxy.py --provider deepseek --key sk-你的密钥</span><br>
+      用完停掉：<span class="mono">pkill -f llm_proxy.py</span>
+    </div>
+  </div>
+  <div class="upload-wrap">
+    <div class="upload-main">
+      <div id="upResult"></div>
+      <div id="upMedia"></div>
+    </div>
+    <div class="upload-side">
+      <div class="sec" style="margin-top:0">价格分析 <span class="tag">自动生成</span></div>
+      <div class="row" style="margin:6px 0 8px;gap:8px">
+        <span class="sm">主模型数</span>
+        <select class="inp" id="anMax" style="max-width:120px">
+          <option value="6">前 6 个</option>
+          <option value="12" selected>前 12 个</option>
+          <option value="20">前 20 个</option>
+          <option value="999">全部</option>
+        </select>
+      </div>
+      <div class="anbox" id="anBox"><div class="empty">上传或粘贴报价后，这里会自动给出价格分析。</div></div>
+      <div id="anAiOut"></div>
+    </div>
+  </div>
+  <div class="sec">比较曲线</div>
+  <div class="chartbox" id="upChart"><div class="empty">上传文件后显示：你的报价 vs 本站最低/最高价曲线</div></div>
+  <div class="sec">或直接粘贴表格文本 <span class="tag">兜底方案</span></div>
+  <textarea class="inp" id="paste" placeholder="从 Excel / Word 里直接复制粘贴到这里，例如：
+Claude Sonnet 5	2.0	10.0
+DeepSeek V4 Pro	1.32	3.96"></textarea>
+  <div class="row" style="margin-top:8px"><button class="btn" id="pasteBtn">识别并对比</button></div>
+</div>
+
+<!-- ============ 数据源 ============ -->
+<div class="pane" id="p-status">
+  <div class="note">Agent A 每日自动采集五个源的全量模型价格；Agent C 每日复核采集价与发布价的一致性。
+    数据库：<span class="mono">data/prices.db</span>（SQLite），每日快照留档于 <span class="mono">snapshots/&lt;日期&gt;/</span>。</div>
+  <div id="status"></div>
+</div>
+
+</main>
+<footer>
+  <div>单位统一为 USD / 百万 tokens（USD / 1M tokens）· 价格随上游供应商变动，下单前请以官网为准</div>
+  <div class="foot-brand">Powered by Chaohuhu Design</div>
+</footer>
+<script id="DATA" type="application/json">/*__DATA__*/</script>
+<script>/*__JS__*/</script>
+</body>
+</html>

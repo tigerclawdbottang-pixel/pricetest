@@ -1,0 +1,104 @@
+name: Build & Deploy Price Site
+
+# 推送到 main、手动触发、或每天 01:00 UTC（= 09:00 香港时间）自动更新
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/**"
+      - "web/**"
+      - "data/official_prices.json"
+      - "data/official_auto.json"
+      - ".github/workflows/pages.yml"
+      - "DEPLOY.md"
+  schedule:
+    - cron: "0 1 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # 走势图依赖历史快照；Actions 运行器是临时的，用 cache 持久化 prices.db。
+      # 每天用 run_id 作为新 key 保存，restore-keys 前缀会取到最近一次。
+      - name: Restore price DB (history)
+        uses: actions/cache/restore@v4
+        with:
+          path: data/prices.db
+          key: prices-db-${{ github.run_id }}
+          restore-keys: |
+            prices-db-
+
+      - name: Collect prices
+        run: |
+          python3 scripts/collect.py || echo "::warning::collect.py 部分源失败，继续构建"
+          python3 scripts/fetch_official.py || echo "::warning::fetch_official.py 失败，沿用已有官网价"
+
+      # 有 MODELPRICE_LLM_KEY secret 就把 Key 写进 data/llm_key.json，
+      # build_site 会把混淆后的 Key 注入页面，访客打开即可用 AI（按你的选择）。
+      - name: Build page (embed AI key from secret)
+        env:
+          LLM_KEY: ${{ secrets.MODELPRICE_LLM_KEY }}
+          LLM_PROVIDER: ${{ secrets.MODELPRICE_LLM_PROVIDER }}
+          LLM_ENDPOINT: ${{ secrets.MODELPRICE_LLM_ENDPOINT }}
+          LLM_MODEL: ${{ secrets.MODELPRICE_LLM_MODEL }}
+        run: |
+          python3 scripts/write_llm_key.py
+          python3 scripts/build_site.py
+          python3 scripts/verify.py || true
+
+      - name: Logic tests
+        run: |
+          node scripts/test_parsers.js
+          node scripts/test_llm.js
+          python3 scripts/test_media.py
+
+      # 页面是自包含单文件，只需要发布 index.html；顺手加 robots.txt 防搜索引擎收录
+      - name: Prepare Pages artifact
+        run: |
+          mkdir -p _site
+          cp web/index.html _site/index.html
+          printf 'User-agent: *\nDisallow: /\n' > _site/robots.txt
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: Save price DB
+        if: always()
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: data/prices.db
+          key: prices-db-${{ github.run_id }}
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
