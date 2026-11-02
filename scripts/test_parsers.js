@@ -18,6 +18,15 @@ const D = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'web', 'data.jso
   ok('xlsx 字符串正确还原 (sharedStrings)', rows[1][0] === 'Claude Sonnet 5', rows[1][0]);
   ok('xlsx 数字正确', parseFloat(rows[1][1]) === 2 && parseFloat(rows[1][2]) === 10);
 
+  // 自闭合空单元格不能吞掉下一格（真实报价单里 <c r="D3" s="94"/> 很常见）
+  const xr = P.xmlRows('<row r="3"><c r="A3" t="inlineStr"><is><t>A</t></is></c><c r="B3" s="1"/><c r="C3" t="n"><v>5</v></c></row>');
+  ok('自闭合空单元格不吞下一格', xr[0] && xr[0].length === 3 && xr[0][1].v === '' && xr[0][2].v === '5', JSON.stringify(xr));
+  // 价格列定位：忽略模态「输入/输出」和上下文长度，优先带 USD/价格 的表头
+  const H = ['类型标签','模型名称','输入','输出','上下文长度','RPM','Input (USD/M Tokens)','Output (USD/M Tokens)','折扣'];
+  const c = P.detectColumns([H]);
+  ok('价格列定位到 USD 列而非模态列', c && c.model === 1 && c.input === 6 && c.output === 7 && c.discount === 8, JSON.stringify(c));
+  ok('上下文长度不被当成区间列', c && c.tier == null, c && c.tier);
+
   const rows2 = P.parseDocx(await P.unzip(fs.readFileSync(fx('test.docx'))));
   console.log('docx 前 3 行:'); rows2.slice(0, 3).forEach(r => console.log('   ', JSON.stringify(r)));
   ok('docx 解析出 7 行', rows2.length === 7, rows2.length + ' 行');

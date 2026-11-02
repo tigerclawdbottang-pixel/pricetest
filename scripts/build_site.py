@@ -85,15 +85,19 @@ def load_official():
 
 SOURCES = [
     {"id": "openrouter",       "label": "OpenRouter",        "url": "https://openrouter.ai/models",
-     "color": "#6366f1", "note": "聚合市场价（基准源，模型命名以它为准）"},
+     "color": "#7C6CF6", "note": "聚合市场价（基准源，模型命名以它为准）"},
     {"id": "fireworks",        "label": "Fireworks AI",      "url": "https://fireworks.ai/models",
-     "color": "#f97316", "note": "自托管推理，含缓存读价格"},
+     "color": "#F97316", "note": "自托管推理，含缓存读价格"},
     {"id": "wokey",            "label": "Wokey",             "url": "https://wokey.ai/models",
-     "color": "#06b6d4", "note": "折扣路由，提供官方参考价与折扣率"},
+     "color": "#22C55E", "note": "折扣路由，提供官方参考价与折扣率"},
     {"id": "cheaperinference", "label": "CheaperInference",  "url": "https://www.cheaperinference.com/#models",
-     "color": "#22c55e", "note": "批量议价市场，折扣力度最大"},
+     "color": "#06B6D4", "note": "批量议价市场，折扣力度最大"},
     {"id": "siliconflow",     "label": "硅基流动 SiliconFlow", "url": "https://www.siliconflow.cn/models",
-     "color": "#a855f7", "note": "国内云，人民币计价按当日汇率折算 USD"},
+     "color": "#EC4899", "note": "国内云，人民币计价按当日汇率折算 USD"},
+    {"id": "venice",           "label": "Venice AI",          "url": "https://docs.venice.ai/overview/pricing",
+     "color": "#F59E0B", "note": "隐私网关，匿名化推理，独立定价"},
+    {"id": "nearai",           "label": "NEAR AI Cloud",      "url": "https://near.ai/pricing",
+     "color": "#14B8A6", "note": "TEE 可信执行环境，独立定价"},
 ]
 
 FX_FILE = os.path.join(ROOT, "data", "fx.json")
@@ -302,9 +306,12 @@ def main():
         if not by_src:
             continue
         # 主显示名：优先 OpenRouter 命名（用户要求：标注不清以 OpenRouter 为准）
-        disp = (g["names"].get("openrouter") or g["names"].get("wokey")
-                or g["names"].get("fireworks") or g["names"].get("cheaperinference")
-                or g["names"].get("siliconflow") or loose)
+        # 主显示名：按 SOURCES 顺序取第一个有名字的源（OpenRouter 排最前，符合「标注不清以 OpenRouter 为准」）
+        disp = loose
+        for _s in (x["id"] for x in SOURCES):
+            if g["names"].get(_s):
+                disp = g["names"][_s]
+                break
         disp = re.sub(r"^[^:]{1,24}:\s*", "", disp).strip()   # 去掉 "DeepSeek: " 这类前缀
         vendor = vendor_of(loose)
         if vendor == "其他":
@@ -315,7 +322,7 @@ def main():
         prices = {}
         vals_in, vals_out = [], []
         kind = kind_of(loose, g["modality"])
-        for s in ("openrouter", "fireworks", "wokey", "cheaperinference", "siliconflow"):
+        for s in (x["id"] for x in SOURCES):
             if s not in by_src:
                 continue
             b = by_src[s]["best"]

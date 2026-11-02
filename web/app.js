@@ -9,13 +9,21 @@ const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g,
   c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const nf = (v, d = 3) => v == null ? '—' : Number(v).toFixed(d).replace(/\.?0+$/, m => m.includes('.') ? '' : m);
 const money = v => v == null ? '—' : '$' + Number(v).toFixed(v < 1 ? 4 : 3).replace(/0+$/, '').replace(/\.$/, '');
+/* 表格价格统一宽度：$ + 3 位整数（不足补空格）+ 小数点 + 3 位小数 */
+const priceFixed = v => {
+  if (v == null || !isFinite(Number(v))) return '—';
+  const s = Number(v).toFixed(3);
+  const i = s.indexOf('.');
+  return '$' + s.slice(0, i).padStart(3, ' ') + s.slice(i);
+};
 
 const S = {
   tab: 'compare', metric: 'input', q: '', srcs: new Set(SRCIDS),
   region: 'all', kind: '文本', minSrc: 2, sort: { k: 'watch', dir: -1 },
   sel: null, chartModel: null, trendSrc: SRCIDS[0], trendModels: [],
   uploadRows: [], uploadMap: [], upSheets: [], upSheetIdx: 0, upFile: '',
-  upMiss: [], upAllRows: [], aiBusy: false, aiStat: null
+  upMiss: [], upAllRows: [], aiBusy: false, aiStat: null,
+  uploadMedia: [], aiFullBusy: false, aiFullStat: '', aiFullSeq: 0, aiFullTimer: null, autoFull: true
 };
 
 /* ============================== 工具 ============================== */
@@ -35,6 +43,23 @@ function pass(m) {
   return true;
 }
 function visibleModels() { return D.models.filter(pass); }
+/* Top 10：关注模型优先，其次来源覆盖与版本数；站内没有调用量，Market Share 用来源覆盖代理 */
+function rankScore(m) {
+  return (m.watch ? 1000 : 0) + (m.n_src || 0) * 100 + (m.n_ver || 0) * 5 +
+    (m.kind === '文本' ? 20 : 0) + (m.min_input != null ? 1 : 0);
+}
+function topModels(n) {
+  return D.models.filter(m => m.kind === '文本')
+    .slice().sort((a, b) => rankScore(b) - rankScore(a) || a.name.localeCompare(b.name))
+    .slice(0, n || 10);
+}
+function rankData(n) {
+  const top = topModels(n || 10);
+  const total = top.reduce((a, m) => a + (m.n_src || 0), 0) || 1;
+  return top.map((m, i) => ({
+    m, rank: i + 1, coverage: m.n_src || 0, share: (m.n_src || 0) / total * 100,
+  }));
+}
 function valOf(m, sid, metric) {
   const p = m.prices[sid]; if (!p) return null;
   if (metric === 'discount') return p.discount ?? null;
@@ -72,11 +97,50 @@ function offCell(m) {
   const v = offVal(m, S.metric);
   if (!o || v == null) return '<td class="na">—</td>';
   const fb = o.src === 'openrouter';
-  return `<td><span class="pill ${fb ? 'off-fb' : 'off'}" title="${esc(offTitle(m))}">`
-    + `${nf(v)}${fb ? '<sup class="fb">OR</sup>' : ''}</span></td>`;
+  return `<td><span class="pill ${fb ? 'off-fb' : 'off'} price" title="${esc(offTitle(m))}">`
+    + `${priceFixed(v)}${fb ? '<sup class="fb">OR</sup>' : ''}</span></td>`;
 }
 
 /* ============================== 表格 ============================== */
+function renderRank() {
+  const list = $('rankList'), chart = $('rankChart');
+  if (!list || !chart) return;
+  const rows = rankData(10);
+  const colors = ['#7C6CF6', '#F97316', '#22C55E', '#06B6D4', '#EC4899',
+    '#EAB308', '#3B82F6', '#F85149', '#14B8A6', '#A855F7'];
+  let h = '';
+  rows.forEach((r, i) => {
+    const m = r.m;
+    const dots = SRCIDS.map(sid =>
+      `<i class="srcdot${m.prices[sid] ? '' : ' off'}" style="background:${srcColor(sid)}" title="${esc(srcLabel(sid))}"></i>`).join('');
+    h += `<button class="rank-row" data-loose="${esc(m.loose)}">
+      <span class="rk">${r.rank}</span>
+      <span class="rn"><b>${esc(m.name)}</b><span>${esc(m.vendor)}</span></span>
+      <span class="rdots">${dots}</span>
+      <span class="rshare"><i style="width:${Math.max(2, r.share)}%;background:${colors[i % colors.length]}"></i><b>${r.share.toFixed(1)}%</b></span>
+    </button>`;
+  });
+  list.innerHTML = h;
+  list.querySelectorAll('.rank-row').forEach(el => {
+    el.onclick = () => {
+      S.sel = el.dataset.loose;
+      renderTable(); renderDetail(); renderChart();
+      const t = $('tbl');
+      if (t && t.scrollIntoView) t.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    };
+  });
+  const W = 520, H = rows.length * 28 + 8, start = 150, avail = W - start - 54;
+  let s = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Top 10 models market share">`;
+  rows.forEach((r, i) => {
+    const y = i * 28 + 4, bw = Math.max(2, avail * r.share / 100);
+    s += `<text x="0" y="${y + 12}" fill="var(--tx3)" font-size="9" font-family="var(--mono)">#${r.rank}</text>`;
+    s += `<text x="22" y="${y + 12}" fill="var(--tx2)" font-size="9.5">${esc(r.m.name.slice(0, 19))}</text>`;
+    s += `<rect x="${start}" y="${y + 4}" width="${bw}" height="10" rx="3" fill="${colors[i % colors.length]}" opacity=".92"><title>${esc(r.m.name)} · ${r.m.n_src}/5 源 · ${r.share.toFixed(1)}%</title></rect>`;
+    s += `<text x="${start + bw + 6}" y="${y + 12}" fill="var(--tx3)" font-size="9" font-family="var(--mono)">${r.share.toFixed(1)}%</text>`;
+  });
+  s += '</svg>';
+  chart.innerHTML = s;
+}
 function renderTable() {
   let list = visibleModels();
   const { k, dir } = S.sort;
@@ -128,8 +192,8 @@ function renderTable() {
       if (S.metric === 'discount') cls = v > 0 ? 'pill lo' : 'pill mut';
       else if (vals.length > 1 && v === mn) cls = 'pill lo';
       else if (vals.length > 1 && v === mx) cls = 'pill hi';
-      const txt = S.metric === 'discount' ? (v > 0 ? v.toFixed(0) + '%' : '—') : nf(v);
-      h += `<td><span class="${cls}">${txt}</span></td>`;
+      const txt = S.metric === 'discount' ? (v > 0 ? v.toFixed(0) + '%' : '—') : priceFixed(v);
+      h += `<td><span class="${cls}${S.metric === 'discount' ? '' : ' price'}">${txt}</span></td>`;
     }
     const sp = (mn && mx && mx > 0 && mn > 0 && vals.length > 1) ? ((mx / mn - 1) * 100) : null;
     h += `<td>${sp ? `<span class="pill mut">${sp.toFixed(0)}%</span>` : '<span class="na">—</span>'}</td>
@@ -256,58 +320,145 @@ function svgLine(el, dates, series, opt = {}) {
   if (dates.length < 1 || !useable.length) {
     el.innerHTML = '<div class="empty">' + (opt.emptyMsg || '暂无数据') + '</div>'; return;
   }
-  const W = opt.w || 720, H = opt.h || 280, pl = 58, pr = 90, pt = 18, pb = 44;
+  // Tableau 风：小字体、细线、小圆点、紧凑留白、浅灰横向网格
+  const W = opt.w || 960, H = opt.h || 260, pl = 46, pr = 12, pt = 14, pb = 30;
   const iw = W - pl - pr, ih = H - pt - pb;
   const all = series.flatMap(s => s.points).filter(v => v != null);
   let mx = Math.max(...all), mn = Math.min(...all);
   if (mx === mn) { mx = mx * 1.2 + 0.01; mn = mn * 0.8; }
-  const pad = (mx - mn) * 0.12; mx += pad; mn = Math.max(0, mn - pad);
+  const pad = (mx - mn) * 0.08; mx += pad; mn = Math.max(0, mn - pad);
   const X = i => dates.length === 1 ? pl + iw / 2 : pl + iw * i / (dates.length - 1);
   const Y = v => pt + ih - ih * ((v - mn) / (mx - mn));
+  const axisFmt = v => v < 1 ? v.toFixed(3) : (v < 10 ? v.toFixed(2) : v.toFixed(1));
   let s = `<svg viewBox="0 0 ${W} ${H}">`;
   for (let i = 0; i <= 4; i++) {
     const y = pt + ih - ih * i / 4, v = mn + (mx - mn) * i / 4;
-    s += `<line x1="${pl}" y1="${y}" x2="${W - pr}" y2="${y}" stroke="var(--line)"/>
-      <text x="${pl - 8}" y="${y + 4}" text-anchor="end" fill="var(--tx3)" font-size="11">${v < 10 ? v.toFixed(3) : v.toFixed(1)}</text>`;
+    s += `<line x1="${pl}" y1="${y}" x2="${W - pr}" y2="${y}" stroke="var(--line)" stroke-width="1"/>
+      <text x="${pl - 6}" y="${y + 3}" text-anchor="end" fill="var(--tx3)" font-size="9" font-family="var(--mono)">${axisFmt(v)}</text>`;
   }
   dates.forEach((d, i) => {
-    s += `<text x="${X(i)}" y="${pt + ih + 20}" text-anchor="middle" fill="var(--tx3)" font-size="11">${esc(d.slice(5))}</text>`;
+    s += `<text x="${X(i)}" y="${pt + ih + 14}" text-anchor="middle" fill="var(--tx3)" font-size="9">${esc(d.slice(5))}</text>`;
   });
   series.forEach(se => {
     const pts = se.points.map((v, i) => v == null ? null : [X(i), Y(v)]).filter(Boolean);
     if (!pts.length) return;
-    s += `<polyline fill="none" stroke="${se.color}" stroke-width="2.2" stroke-linejoin="round"
+    s += `<polyline fill="none" stroke="${se.color}" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"
       points="${pts.map(p => p[0].toFixed(1) + ',' + p[1].toFixed(1)).join(' ')}"/>`;
-    pts.forEach(p => { s += `<circle cx="${p[0]}" cy="${p[1]}" r="3.2" fill="${se.color}"><title>${esc(se.label)}</title></circle>`; });
+    pts.forEach(p => { s += `<circle cx="${p[0]}" cy="${p[1]}" r="2" fill="${se.color}"><title>${esc(se.label)}</title></circle>`; });
     const last = pts[pts.length - 1];
-    s += `<text x="${last[0] + 6}" y="${last[1] + 4}" fill="${se.color}" font-size="11" font-weight="600">${esc(se.label)}</text>`;
+    s += `<text x="${last[0] + 5}" y="${last[1] + 3}" fill="${se.color}" font-size="9" font-weight="600">${esc(se.label)}</text>`;
   });
   s += '</svg>';
   el.innerHTML = s;
 }
 
-/* ======================== 对比图表 ======================== */
+/* ======================== 各源价格对比（Top 10） ======================== */
+const METRIC_SHORT = { input: '输入价', output: '输出价', cache_read: '缓存命中', cache_write: '缓存写入' };
 function renderChart() {
-  const m = S.sel ? D.models.find(x => x.loose === S.sel)
-    : visibleModels().find(x => x.n_src >= 2);
-  if (!m) { $('chart').innerHTML = '<div class="empty">选择一个模型查看图表</div>'; $('chart2').innerHTML = ''; return; }
-  $('chartTitle').textContent = m.name + ' — 各源价格对比';
-  const mk = g => SRCIDS.filter(s => m.prices[s]).map(s => ({ label: srcLabel(s), color: srcColor(s), value: valOf(m, s, g) }));
-  svgBar($('chart'), mk(S.metric), {});
-  svgBar($('chart2'), mk(S.metric === 'input' ? 'output' : 'input'), {});
-  $('chart2Title').textContent = m.name + ' — ' + metricLabel(S.metric === 'input' ? 'output' : 'input');
-  // 汇总卡片
-  const vin = activeVals(m, 'input'), vout = activeVals(m, 'output');
-  let best = null, bv = Infinity;
-  for (const sid of S.srcs) { const p = m.prices[sid]; if (p && p.input != null && p.input < bv) { bv = p.input; best = sid; } }
-  $('cards').innerHTML = `
-    <div class="card"><h3>最低输入价</h3><div class="big" style="color:var(--lo)">${money(vin.length ? Math.min(...vin) : null)}</div>
-      <div class="sm">${best ? esc(srcLabel(best)) : '—'}</div></div>
-    <div class="card"><h3>最高输入价</h3><div class="big" style="color:var(--hi)">${money(vin.length ? Math.max(...vin) : null)}</div>
-      <div class="sm">${vin.length > 1 ? '价差 ' + ((Math.max(...vin) / Math.min(...vin) - 1) * 100).toFixed(0) + '%' : '—'}</div></div>
-    <div class="card"><h3>最低输出价</h3><div class="big" style="color:var(--lo)">${money(vout.length ? Math.min(...vout) : null)}</div><div class="sm">per 1M tokens</div></div>
-    <div class="card"><h3>覆盖来源</h3><div class="big">${m.n_src}<span style="font-size:14px;color:var(--tx3)"> / ${SRCIDS.length}</span></div>
-      <div class="sm">${m.n_ver} 个版本</div></div>`;
+  const top = topModels(10);
+  const metric = S.metric === 'discount' ? 'input' : S.metric;
+  const label = METRIC_SHORT[metric] || metricLabel(metric);
+  const title = $('chartTitle');
+  if (title) title.textContent = `Top 10 模型 · 各源${label}`;
+  const tag = $('topTag');
+  if (tag) tag.textContent = `Top 10 · ${label}`;
+  renderTopCards(top, metric);
+  renderGroupedBars($('chart'), top, metric);
+  renderTop10Table($('top10'), top, metric);
+}
+function renderTopCards(top, metric) {
+  const el = $('cards');
+  if (!el) return;
+  let nPrices = 0;
+  const spreads = [];
+  for (const m of top) {
+    const vals = SRCIDS.map(sid => valOf(m, sid, metric)).filter(v => v != null);
+    nPrices += vals.length;
+    if (vals.length > 1) {
+      const mn = Math.min(...vals), mx = Math.max(...vals);
+      if (mn > 0 && mx > mn) spreads.push((mx / mn - 1) * 100);
+    }
+  }
+  const avg = spreads.length ? spreads.reduce((a, b) => a + b, 0) / spreads.length : null;
+  const worst = spreads.length ? Math.max(...spreads) : null;
+  el.innerHTML = `
+    <div class="card"><h3>Top 10 模型</h3><div class="big">${top.length}</div><div class="sm">关注模型优先 · 来源覆盖排序</div></div>
+    <div class="card"><h3>可比${METRIC_SHORT[metric] || '价格'}</h3><div class="big">${nPrices}</div><div class="sm">模型 × 来源 的有效价格</div></div>
+    <div class="card"><h3>平均价差</h3><div class="big" style="color:var(--warn)">${avg == null ? '—' : avg.toFixed(0) + '%'}</div><div class="sm">同模型多源最高/最低</div></div>
+    <div class="card"><h3>最大价差</h3><div class="big" style="color:var(--hi)">${worst == null ? '—' : worst.toFixed(0) + '%'}</div><div class="sm">Top 10 中最悬殊</div></div>`;
+}
+function renderGroupedBars(el, top, metric) {
+  if (!el) return;
+  const srcs = SRCIDS.filter(sid => top.some(m => valOf(m, sid, metric) != null));
+  if (!top.length || !srcs.length) {
+    el.innerHTML = '<div class="empty">暂无数据</div>';
+    return;
+  }
+  const W = Math.max(960, top.length * 105), H = 330, pl = 54, pr = 16, pt = 16, pb = 82;
+  const iw = W - pl - pr, ih = H - pt - pb;
+  const maxV = Math.max(1, ...top.flatMap(m => srcs.map(sid => valOf(m, sid, metric)).filter(v => v != null)));
+  const group = iw / top.length;
+  const bw = Math.min(15, group * 0.16), gap = 2;
+  const barW = srcs.length * bw + (srcs.length - 1) * gap;
+  let s = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Top 10 模型各源价格对比">`;
+  for (let i = 0; i <= 4; i++) {
+    const y = pt + ih - ih * i / 4, v = maxV * i / 4;
+    s += `<line x1="${pl}" y1="${y}" x2="${W - pr}" y2="${y}" stroke="var(--line)" stroke-width="1"/>
+      <text x="${pl - 8}" y="${y + 4}" text-anchor="end" fill="var(--tx3)" font-size="9" font-family="var(--mono)">${v < 10 ? v.toFixed(2) : v.toFixed(0)}</text>`;
+  }
+  top.forEach((m, gi) => {
+    const x0 = pl + group * gi;
+    if (m.loose === S.sel) s += `<rect x="${x0 + 2}" y="${pt}" width="${group - 4}" height="${ih}" rx="6" fill="var(--acc-bg)"/>`;
+    srcs.forEach((sid, si) => {
+      const v = valOf(m, sid, metric);
+      if (v == null) return;
+      const bh = Math.max(2, ih * v / maxV);
+      const x = x0 + (group - barW) / 2 + si * (bw + gap);
+      const y = pt + ih - bh;
+      s += `<rect x="${x}" y="${y}" width="${bw}" height="${bh}" rx="2.5" fill="${srcColor(sid)}" opacity=".9"><title>${esc(m.name)} · ${esc(srcLabel(sid))}: ${nf(v)}</title></rect>`;
+    });
+    const cx = x0 + group / 2;
+    s += `<text x="${cx}" y="${pt + ih + 16}" fill="var(--tx2)" font-size="9" text-anchor="end" transform="rotate(-28 ${cx} ${pt + ih + 16})">${esc(m.name.slice(0, 16))}</text>`;
+  });
+  s += '</svg>';
+  el.innerHTML = s + '<div class="lgd">' +
+    srcs.map(sid => `<span><i style="background:${srcColor(sid)}"></i>${esc(srcLabel(sid))}</span>`).join('') + '</div>';
+}
+function renderTop10Table(el, top, metric) {
+  if (!el) return;
+  if (!top.length) { el.innerHTML = '<div class="empty">暂无数据</div>'; return; }
+  const isDisc = metric === 'discount';
+  const fmt = v => v == null ? '—' : (isDisc ? v.toFixed(0) + '%' : priceFixed(v));
+  let h = '<table><thead><tr><th class="l">#</th><th class="l">模型</th><th class="l">厂商</th>';
+  for (const sid of SRCIDS) h += `<th>${esc(srcLabel(sid))}</th>`;
+  h += '<th>最低</th><th>最高</th><th>价差</th></tr></thead><tbody>';
+  top.forEach((m, idx) => {
+    const vals = SRCIDS.map(sid => valOf(m, sid, metric)).filter(v => v != null);
+    const mn = vals.length ? Math.min(...vals) : null;
+    const mx = vals.length ? Math.max(...vals) : null;
+    h += `<tr data-loose="${esc(m.loose)}" class="${S.sel === m.loose ? 'sel' : ''}">` +
+      `<td class="l mono">${idx + 1}</td>` +
+      `<td class="l"><span class="mname">${esc(m.name)}</span>${m.watch ? ' <span class="bdge">关注</span>' : ''}</td>` +
+      `<td class="l"><span class="mven">${esc(m.vendor)}</span></td>`;
+    for (const sid of SRCIDS) {
+      const v = valOf(m, sid, metric);
+      if (v == null) { h += '<td class="na">—</td>'; continue; }
+      let cls = '';
+      if (vals.length > 1 && v === mn) cls = 'hl2';
+      else if (vals.length > 1 && v === mx) cls = 'hl3';
+      h += `<td class="${cls}">${fmt(v)}</td>`;
+    }
+    h += `<td class="hl2">${fmt(mn)}</td><td class="hl3">${fmt(mx)}</td>` +
+      `<td>${(mn != null && mx != null && mn > 0 && mx > mn) ? ((mx / mn - 1) * 100).toFixed(0) + '%' : '—'}</td></tr>`;
+  });
+  h += '</tbody></table>';
+  el.innerHTML = h;
+  el.querySelectorAll('tr[data-loose]').forEach(tr => {
+    tr.onclick = () => {
+      S.sel = tr.dataset.loose;
+      renderTable(); renderDetail(); renderChart();
+    };
+  });
 }
 
 /* ======================== 图像 / 视频 ======================== */
@@ -404,22 +555,23 @@ function renderTrend() {
       SRCIDS.map(s => `<option value="${s}">${esc(srcLabel(s))}</option>`).join('');
     sel.value = S.trendSrc;
   }
-  // 模型候选：有历史数据的
-  const cand = D.models.filter(m => m.n_src >= 2).slice(0, 400);
+  // 模型候选：默认 Top 10（与首页排名一致），默认全部选中
+  const cand = topModels(10);
   const ml = $('trendModel');
   if (ml.options.length !== cand.length) {
     ml.innerHTML = cand.map(m => `<option value="${esc(m.loose)}">${esc(m.name)} (${m.n_src}源)</option>`).join('');
-    ml.value = (S.trendModels[0] || cand[0]?.loose || '');
+    const defKeys = S.trendModels.length ? S.trendModels : cand.map(m => m.loose);
+    [...ml.options].forEach(o => { o.selected = defKeys.includes(o.value); });
   }
   const src = sel.value;
   const keys = ml.selectedOptions.length ? [...ml.selectedOptions].map(o => o.value)
-    : (S.trendModels.length ? S.trendModels : [cand[0]?.loose]);
+    : cand.map(m => m.loose);
   if (keys.length && (!S.trendModels.length || S.trendModels[0] !== keys[0])) S.trendModels = keys;
 
-  const palette = ['#4f9cf9', '#f97316', '#22c55e', '#a855f7', '#eab308', '#06b6d4'];
+  const palette = ['#7C6CF6', '#F97316', '#22C55E', '#06B6D4', '#EC4899', '#EAB308', '#3B82F6', '#F85149', '#14B8A6', '#A855F7'];
   const series = [];
   const ids = (src === '__all__') ? SRCIDS : [src];
-  keys.slice(0, 6).forEach((loose, ki) => {
+  keys.slice(0, 10).forEach((loose, ki) => {
     const m = D.models.find(x => x.loose === loose); if (!m) return;
     ids.forEach((sid, si) => {
       const pts = dates.map(d => {
@@ -513,9 +665,15 @@ function renderSheetPicker() {
   };
 }
 /* 折扣列：88折 -> 0.88，105折 -> 1.05，88% -> 0.88 */
-function parseDiscount(cell) {
+function parseDiscount(cell, allowBareDecimal) {
   if (cell == null) return null;
   const s = String(cell).replace(/\s+/g, '');
+  // 折扣列有时直接写 0.7（=7折）；只允许在明确的折扣列里这样读，
+  // 否则 0.5（缓存价）会被误当成 5 折
+  if (allowBareDecimal && /^\d*\.?\d+$/.test(s)) {
+    const r = parseFloat(s);
+    if (isFinite(r) && r > 0 && r <= 1) return r;
+  }
   let m = s.match(/([\d.]+)折/) || s.match(/([\d.]+)%/);
   if (!m) return null;
   const v = parseFloat(m[1]);
@@ -543,10 +701,12 @@ function sheetUnit(rows) {
 function pickPrices(cells, cols, unit) {
   let disc = null;
   // 表里常见三档渠道折扣（原厂直连 / 第三方直连 / 第三方混线），取最低那档＝实际能拿到的最好价
-  for (const c of cells) {
-    const d = parseDiscount(c);
+  const consider = (c, allowBare) => {
+    const d = parseDiscount(c, allowBare);
     if (d != null && (disc == null || d < disc)) disc = d;
-  }
+  };
+  if (cols && cols.discount != null) consider(cells[cols.discount], true);
+  for (const c of cells) consider(c, false);   // 其它格只认 7折 / 70%，避免把缓存价 0.5 当折扣
   const apply = v => (v == null || !disc) ? (v == null ? null : v) : +(v * disc).toFixed(6);
   const conv = v => localUSD(v, unit);
   if (cols) {
@@ -562,6 +722,9 @@ function pickPrices(cells, cols, unit) {
                list: conv(vin), listOut: conv(vout),
                cache: conv(get('cacheRead')), cw: conv(get('cacheWrite')), disc };
     }
+    // 已经识别出价格列但这一行为空：不要再回退到「整行取最大两个数」，
+    // 否则 RPM / 上下文长度 / 版本号会被误当成价格（真实报价单曾出现 60 / 354）
+    return { in: null, out: null, list: null, listOut: null, disc, cache: null, cw: null };
   }
   const nums = [];
   for (const c of cells) {
@@ -686,8 +849,181 @@ function analyzeRows(rows, srcName, sheetName) {
     (cols ? ' <span class="tag" title="已按表头定位列：' + esc(Object.keys(cols).join('/')) + '">表头定位</span>' : '') +
     unitNote +
     (found.length ? '' : ' （未识别到模型名，可粘贴文本重试）');
+  S.uploadMedia = [];
+  S.aiFullSeq = (S.aiFullSeq || 0) + 1;
+  S.aiFullBusy = false;
+  clearTimeout(S.aiFullTimer);
   updateAiBtn();
   renderUpload();
+  updateAiFullNote();
+  scheduleAiFullRead();
+}
+/* ---------------- AI 完整读取（整表结构理解） ---------------- */
+function updateAiFullNote() {
+  const el = $('aiFullNote');
+  if (el) el.innerHTML = S.aiFullStat || '';
+}
+function autoFullReady() {
+  if (typeof fetch !== 'function') return false;
+  if (S.autoFull === false) return false;
+  let cfg;
+  try { cfg = S.aiCfg || aiLoadCfg(); } catch (e) { return false; }
+  if (cfg.autoFull === false) return false;
+  if (cfg.mode === 'direct') return !!cfg.key;
+  if (cfg.mode === 'proxy') return !!cfg.proxyUrl && !/127\.0\.0\.1:8787/.test(cfg.proxyUrl);
+  return false;
+}
+function scheduleAiFullRead() {
+  clearTimeout(S.aiFullTimer);
+  if (!autoFullReady()) {
+    S.aiFullStat = '未自动执行 AI 完整读取（未配置 AI 或使用本地代理），当前为本地规则结果';
+    updateAiFullNote();
+    return;
+  }
+  S.aiFullStat = 'AI 完整读取准备中…';
+  updateAiFullNote();
+  S.aiFullTimer = setTimeout(runAiFullRead, 250);
+}
+function buildAiResults(res) {
+  const mediaItems = res.rows.filter(x => x.kind === 'media');
+  const mediaLooses = new Set(mediaItems.map(x => x.model.loose));
+  const groups = new Map();
+  for (const it of res.rows) {
+    if (it.kind === 'media') continue;
+    // 媒体模型只进媒体表，避免 token 误比
+    if (it.model.has_media || mediaLooses.has(it.model.loose)) continue;
+    const key = `${it.model.loose}|${it.spec || ''}`;
+    let g = groups.get(key);
+    if (!g) {
+      g = { m: Object.assign({}, it.model, { _ai: true }), tiers: [], line: it.row,
+            currency: it.currency, per: '1M', conf: it.conf };
+      groups.set(key, g);
+    }
+    let t = g.tiers.find(x => x.tier === (it.spec || ''));
+    if (!t) {
+      t = { tier: it.spec || '', in: null, out: null, list: null, listOut: null,
+            disc: it.discount, line: it.row, cache: null, cw: null,
+            unit: it.currency === 'CNY' ? '¥/1M' : '$/1M' };
+      g.tiers.push(t);
+    }
+    if (it.kind === 'output') {
+      t.out = it.price; t.listOut = it.list;
+      t.rawOut = it.rawFinal != null ? it.rawFinal : it.rawList;
+    } else {
+      t.in = it.price; t.list = it.list;
+      t.rawIn = it.rawFinal != null ? it.rawFinal : it.rawList;
+    }
+    if (t.disc == null) t.disc = it.discount;
+    if (it.conf === 'low') g.conf = 'low';
+  }
+  const tokenRows = [...groups.values()];
+  for (const g of tokenRows) {
+    const base = g.tiers[0] || {};
+    g.in = base.in; g.out = base.out; g.cache = base.cache; g.cw = base.cw;
+    g.list = base.list; g.listOut = base.listOut; g.disc = base.disc;
+    g.rawIn = base.rawIn; g.rawOut = base.rawOut; g.unit = base.unit;
+    g.line = base.line;
+  }
+  const mediaMap = new Map();
+  for (const it of mediaItems) {
+    const m = Object.assign({}, it.model, { _ai: true });
+    const key = `${m.loose}|${it.spec}|${it.unit}`;
+    const rec = { m, spec: it.spec, unit: it.unit, price: it.price, list: it.list,
+                  discount: it.discount, line: it.row, conf: it.conf, rawName: it.rawName };
+    const cur = mediaMap.get(key);
+    if (!cur || (rec.price != null && (cur.price == null || rec.price < cur.price))) mediaMap.set(key, rec);
+  }
+  return { tokenRows, mediaRows: [...mediaMap.values()] };
+}
+async function runAiFullRead() {
+  if (S.aiFullBusy) return;
+  const cfg = S.aiCfg || aiLoadCfg();
+  if (cfg.mode === 'direct' && !cfg.key) {
+    S.aiFullStat = '未配置 AI Key，当前为本地规则结果';
+    updateAiFullNote(); return;
+  }
+  const all = (S.upAllRows || []).map((r, i) => ({
+    i, cells: (r || []).map(c => c == null ? '' : String(c)),
+  })).filter(x => x.cells.some(c => String(c).trim() !== ''));
+  if (!all.length) return;
+  const seq = S.aiFullSeq;
+  S.aiFullBusy = true;
+  const maxRows = cfg.fullMaxRows || 400;
+  S.aiFullStat = `AI 完整读取中… ${Math.min(all.length, maxRows)} 行（约 ${Math.ceil(Math.min(all.length, maxRows) / (cfg.fullBatch || 20))} 批）`;
+  updateAiFullNote();
+  try {
+    const fx = (D.fx && D.fx.usd_per_cny) || undefined;
+    const res = await aiReadFull(all, D.models, cfg, {
+      fx, fetchImpl: (typeof fetch === 'function' ? fetch : null), maxRows,
+    });
+    if (seq !== S.aiFullSeq) return;
+    if (res.rows.length) {
+      const { tokenRows, mediaRows } = buildAiResults(res);
+      const aiLoose = new Set(tokenRows.map(f => f.m.loose));
+      const aiMediaLoose = new Set(mediaRows.map(r => r.m.loose));
+      const ruleKeep = (S.uploadRows || []).filter(f =>
+        !aiLoose.has(f.m.loose) && !aiMediaLoose.has(f.m.loose) && !f.m.has_media);
+      S.uploadRows = tokenRows.concat(ruleKeep);
+      S.uploadMap = S.uploadRows;
+      S.uploadMedia = mediaRows;
+      S.upMiss = [];
+      const cost = res.usage && (res.usage.prompt_tokens || res.usage.completion_tokens)
+        ? ` · tokens ${res.usage.prompt_tokens || 0}↓/${res.usage.completion_tokens || 0}↑` : '';
+      S.aiFullStat = `AI 完整读取完成：${S.uploadRows.length} 个 token 模型 / ${S.uploadMedia.length} 条媒体报价${cost}` +
+        (res.error ? ` · <span style="color:var(--hi)">部分批次失败：${esc(res.error.message || res.error)}</span>` : '') +
+        (res.dropped.length ? ` · ${res.dropped.length} 行无有效数字/模型` : '');
+    } else {
+      S.aiFullStat = res.error
+        ? `<span style="color:var(--hi)">AI 完整读取失败：${esc(res.error.message || res.error)}（已保留规则结果）</span>`
+        : 'AI 完整读取没有返回有效报价，已保留规则结果';
+    }
+  } catch (e) {
+    S.aiFullStat = `<span style="color:var(--hi)">AI 完整读取异常：${esc(e.message || e)}（已保留规则结果）</span>`;
+  } finally {
+    if (seq === S.aiFullSeq) {
+      S.aiFullBusy = false;
+      updateAiFullNote();
+      updateAiBtn();
+      renderUpload();
+    }
+  }
+}
+function renderUploadMedia() {
+  const box = $('upMedia');
+  if (!box) return;
+  const rows = S.uploadMedia || [];
+  if (!rows.length) { box.innerHTML = ''; return; }
+  const unitLabel = u => (MEDIA_UNIT[u] || u || '—');
+  let h = `<div class="sec">媒体报价 <span class="tag">按张 / 秒 / 条同单位比较</span>
+    <span class="tag">${rows.length} 条</span></div>`;
+  h += '<div class="tw" style="max-height:none"><table><thead><tr>' +
+    '<th class="l">模型</th><th>规格</th><th>单位</th><th>你的价</th><th>目录价</th>' +
+    '<th>站内最低</th><th>站内最高</th><th>差异</th><th>行号</th><th>置信度</th>' +
+    '</tr></thead><tbody>';
+  for (const r of rows) {
+    const site = (D.media || []).filter(x => x.loose === r.m.loose && x.unit === r.unit);
+    const vals = site.map(x => x.price).filter(v => v != null);
+    const mn = vals.length ? Math.min(...vals) : null;
+    const mx = vals.length ? Math.max(...vals) : null;
+    const diff = (mn != null && mn > 0 && r.price != null) ? ((r.price - mn) / mn * 100) : null;
+    let diffCell = '<span class="na">—</span>';
+    if (diff != null) {
+      diffCell = diff > 0.5 ? `<span class="pill hi">高 ${diff.toFixed(0)}%</span>`
+        : diff < -0.5 ? '<span class="pill lo">低</span>' : '<span class="hl">基本持平</span>';
+    }
+    const tags = (r.m._aiUnmatched ? ' <span class="tag" title="站内未收录">未收录</span>' : '');
+    h += `<tr><td class="l"><span class="mname">${esc(r.m.name)}</span>${tags}<br>` +
+      `<span class="mven">${esc(r.m.vendor || '')}</span></td>` +
+      `<td>${esc(r.spec || '—')}</td><td>${esc(unitLabel(r.unit))}</td>` +
+      `<td class="hl2">${r.price == null ? '—' : money(r.price)} <span class="sm">/ ${esc(unitLabel(r.unit))}</span></td>` +
+      `<td>${r.list == null ? '—' : money(r.list)}</td>` +
+      `<td>${mn == null ? '—' : money(mn)}</td><td>${mx == null ? '—' : money(mx)}</td>` +
+      `<td>${diffCell}</td><td>${r.line == null ? '—' : r.line + 1}</td>` +
+      `<td>${esc(r.conf || '')}</td></tr>`;
+  }
+  h += '</tbody></table></div>';
+  h += '<div class="note">媒体价格只与站内同单位（张/秒/条/步）比较；站内无同单位数据时显示 —。</div>';
+  box.innerHTML = h;
 }
 /* ---------------- AI 补识别（见 llm.js） ---------------- */
 const AI_KEY = 'modelprice.llm.v1';
@@ -876,6 +1212,7 @@ function initAiUI() {
     else if (b) { cfg.key = b.key; cfg.builtin = true; }   // 输入框留空 = 继续用内置
     // 没填且无内置时保留原值，避免误清空
     cfg.mask = maskOf(cfg.key);
+    cfg.autoFull = S.autoFull !== false;
     aiSaveCfg();
     $('aiCfgNote').innerHTML = '<span style="color:var(--ok)">已保存到本机浏览器</span>';
   };
@@ -897,6 +1234,24 @@ function initAiUI() {
     }
   };
   if ($('aiBtn')) $('aiBtn').onclick = runAI;
+  S.autoFull = cfg.autoFull !== false;
+  if ($('aiFullBtn')) $('aiFullBtn').onclick = runAiFullRead;
+  if ($('aiAuto')) {
+    $('aiAuto').checked = S.autoFull;
+    $('aiAuto').onchange = e => {
+      S.autoFull = e.target.checked;
+      cfg.autoFull = S.autoFull;
+      try { aiSaveCfg(); } catch (_) {}
+      if (!S.autoFull) {
+        clearTimeout(S.aiFullTimer);
+        S.aiFullStat = '已关闭自动完整读取';
+      } else if ((S.upAllRows || []).length) {
+        scheduleAiFullRead();
+      }
+      updateAiFullNote();
+    };
+  }
+  updateAiFullNote();
   updateAiBtn();
   // 开页即探测本地代理是否就绪，省得用户点了才发现没起服务
   const _f = (typeof fetch === 'function') ? fetch : null;
@@ -944,7 +1299,13 @@ function upVal(f, k) {
 
 function renderUpload() {
   const box = $('upResult');
-  if (!S.uploadRows.length) { box.innerHTML = ''; $('upChart').innerHTML = ''; return; }
+  if (!S.uploadRows.length) {
+    box.innerHTML = '';
+    $('upChart').innerHTML = '';
+    renderAnalysis();
+    renderUploadMedia();
+    return;
+  }
   let h = `<div class="tw" style="max-height:none"><table><thead><tr>
     <th class="l">上传的模型</th><th>区间（Tokens）</th><th>官网价 输入</th><th>官网价 输出</th>
     <th>上传 输入价</th><th>本站最低</th><th>本站最高</th><th>差异</th>
@@ -957,7 +1318,8 @@ function renderUpload() {
     const offCls = !o ? '' : (o.src === 'openrouter' ? 'off-fb' : 'off');
     const offCell2 = v => v == null ? '<span class="na">—</span>'
       : `<span class="pill ${offCls}" title="${esc(offTitle(m))}">${nf(v)}${o && o.src === 'openrouter' ? '<sup class="fb">OR</sup>' : ''}</span>`;
-    const tags = (m._ai ? ` <span class="tag ai" title="由大模型补识别，请核对">AI${f.conf === 'low' ? '?' : ''}</span>` : '') +
+    const tags = (m._ai ? ` <span class="tag ai" title="由大模型读取，请核对">AI${f.conf === 'low' ? '?' : ''}</span>` : '') +
+      (m._aiUnmatched ? ' <span class="tag" title="站内未收录，无法比较">未收录</span>' : '') +
       (m._fuzzy ? ' <span class="tag" title="型号变体近似匹配，请人工核对">近似</span>' : '') +
       (m.has_media ? ' <span class="tag" title="按张/秒/步计价，未参与 token 比价">媒体计价</span>' : '');
     const nrow = Math.max(1, f.tiers.length);
@@ -1023,23 +1385,24 @@ function renderUpload() {
     }
     const poly = key => cs.map((c, i) => c[key] == null ? null
       : `${X(i).toFixed(1)},${Y(c[key]).toFixed(1)}`).filter(Boolean).join(' ');
-    s += `<polyline points="${poly('min')}" fill="none" stroke="#22c55e" stroke-width="2"/>`;
-    s += `<polyline points="${poly('max')}" fill="none" stroke="#ef4444" stroke-width="2"/>`;
-    s += `<polyline points="${poly('up')}" fill="none" stroke="#eab308" stroke-width="2.6" stroke-dasharray="6 3"/>`;
+    s += `<polyline points="${poly('min')}" fill="none" stroke="#22C55E" stroke-width="2"/>`;
+    s += `<polyline points="${poly('max')}" fill="none" stroke="#F85149" stroke-width="2"/>`;
+    s += `<polyline points="${poly('up')}" fill="none" stroke="#F97316" stroke-width="2.6" stroke-dasharray="6 3"/>`;
     if (cs.some(c => c.off != null))
       s += `<polyline points="${poly('off')}" fill="none" stroke="var(--acc)" stroke-width="2" stroke-dasharray="2 3"/>`;
     cs.forEach((c, i) => {
-      s += `<circle cx="${X(i)}" cy="${Y(c.up)}" r="4" fill="#eab308"><title>${esc(c.name)} 上传价 ${nf(c.up)}</title></circle>`;
+      s += `<circle cx="${X(i)}" cy="${Y(c.up)}" r="4" fill="#F97316"><title>${esc(c.name)} 上传价 ${nf(c.up)}</title></circle>`;
       s += `<text x="${X(i)}" y="${pt + ih + 18}" text-anchor="middle" fill="var(--tx2)" font-size="10.5"
         transform="rotate(-18 ${X(i)} ${pt + ih + 18})">${esc(c.name.slice(0, 16))}</text>`;
     });
     s += '</svg>';
     $('upChart').innerHTML = s +
-      `<div class="lgd"><span><i style="background:#eab308"></i>你的上传价</span>
-       <span><i style="background:#22c55e"></i>本站最低</span>
-       <span><i style="background:#ef4444"></i>本站最高</span>
+      `<div class="lgd"><span><i style="background:#F97316"></i>你的上传价</span>
+       <span><i style="background:#22C55E"></i>本站最低</span>
+       <span><i style="background:#F85149"></i>本站最高</span>
        <span><i style="background:var(--acc)"></i>模型官网价格</span></div>`;
   }
+  renderUploadMedia();
 }
 
 /* ======================== 状态 ======================== */
@@ -1096,12 +1459,18 @@ function init() {
     const cur = document.documentElement.getAttribute('data-theme');
     const nxt = cur === 'light' ? 'dark' : 'light';
     document.documentElement.setAttribute('data-theme', nxt);
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute('content', nxt === 'light' ? '#FAFAFA' : '#08080A');
     try { localStorage.setItem('mp-theme', nxt); } catch (_) {}
     renderChart(); renderTrend();
   };
   try {
     const t = localStorage.getItem('mp-theme');
-    if (t) document.documentElement.setAttribute('data-theme', t);
+    if (t) {
+      document.documentElement.setAttribute('data-theme', t);
+      const meta = document.querySelector('meta[name="theme-color"]');
+      if (meta) meta.setAttribute('content', t === 'light' ? '#FAFAFA' : '#08080A');
+    }
   } catch (_) {}
   document.querySelectorAll('.tab').forEach(t => t.onclick = () => switchTab(t.dataset.t));
 
@@ -1121,6 +1490,10 @@ function init() {
     const t = $('paste').value;
     if (!t.trim()) return;
     analyzeRows(parseDelim(t), '粘贴内容');
+    const target = $('upResult');
+    if (target && target.scrollIntoView) {
+      target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
   };
   $('trendSrc').onchange = e => { S.trendSrc = e.target.value; renderTrend(); };
   $('trendModel').onchange = () => renderTrend();
@@ -1138,6 +1511,7 @@ function init() {
   };
 
   $('updated').textContent = D.latest + ' ' + (D.generated || '').slice(11, 16);
+  renderRank();
   renderTable(); renderChart(); renderDetail(); initAiUI();
 }
 init();
@@ -1268,7 +1642,7 @@ function buildAnalysis(rows, maxN) {
     bullet.push(`你的报价 ${my}（USD/M tokens）` +
       (f.disc && f.disc !== 1 && f.list != null
         ? `；表内目录价 $${nf(f.list)} / ${f.listOut == null ? '—' : '$' + nf(f.listOut)}，` +
-          `按表内 ${(f.disc * 100).toFixed(0)} 折折算`
+          `按表内 ${(f.disc * 10).toFixed(1).replace(/\.0$/, '')} 折折算`
         : '') +
       (f.tiers && f.tiers.length > 1 ? `；本表分 ${f.tiers.length} 档：${tierBrief(f)}` : '') +
       (f.currency === 'CNY' ? '（原表为人民币，已按汇率折算）' : ''));
@@ -1312,6 +1686,9 @@ function renderAnalysis() {
   const rows = S.uploadRows || [];
   if (!rows.length) {
     box.innerHTML = '<div class="empty">上传或粘贴报价后，这里会自动给出价格分析。</div>';
+    if ((S.uploadMedia || []).length) {
+      box.innerHTML = `<div class="empty">本次为媒体报价（${S.uploadMedia.length} 条，按张/秒/条计价），见下方「媒体报价」表；不参与 token 分析。</div>`;
+    }
     return;
   }
   const n = S.anMax || 12;
@@ -1325,6 +1702,9 @@ function renderAnalysis() {
     `<div class="an-foot"><span>共 ${esc(r.text.length)} 字 · 可复制后贴进报告</span>
       <button class="btn xs" id="anCopy">复制文字</button>
       <button class="btn xs" id="anAI">AI 解读</button></div>`;
+  if ((S.uploadMedia || []).length) {
+    box.innerHTML += `<div class="note" style="margin-top:10px">另有 <b>${S.uploadMedia.length}</b> 条媒体报价，见下方「媒体报价」表；按张/秒/条同单位比较，不参与 token 分析。</div>`;
+  }
   const more = $('anMore');
   if (more) more.onclick = () => { S.anMax = 999; renderAnalysis(); };
   const cp = $('anCopy');
@@ -1371,4 +1751,6 @@ function afterInsight() {
 /* 调试/测试钩子：暴露内部状态给 Node 测试与浏览器控制台 */
 if (typeof window !== 'undefined')
   window.__MP = { S, D, SRC, SRCIDS, analyzeRows, buildAnalysis, mainModels, familyKey,
-    extremum, pickPrices, detectColumns, renderAnalysis, renderUpload, handleFile };
+    extremum, pickPrices, detectColumns, renderAnalysis, renderUpload, handleFile,
+    runAiFullRead, buildAiResults, renderUploadMedia, autoFullReady,
+    topModels, rankData, renderRank };

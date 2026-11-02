@@ -187,6 +187,39 @@ function mkFetch(replies, log) {
       }, fx: 0.15 });
   ok('规则已识别但缺价的行把 hint 注入候选', /DeepSeek V4 Pro/.test(hintPrompt), hintPrompt.slice(0, 90));
 
+  console.log('\n=== AI 完整读取（整表） ===');
+  const fullRows = [
+    { i: 3, cells: ['文本', 'Claude Opus 4.8', 'Claude Opus', '', 'claude-opus-4-8',
+      'Anthropic', 'SANSHENG', '文本', '文本', '否', '1000000', '128000', '60', '200000', '10',
+      '', '', '', '', '', '', 'P0', '5', '6.25', '10', '0.5', '25', '0.7', '3.5', '4.375', '7', '0.35', '17.5'] },
+    { i: 4, cells: ['图像', 'nano banana 2', 'Google Image', 'resolution=1K', 'Google',
+      'SANSHENG', '文本、图像', '图像', '否', '120', '180', '2000000', '80',
+      '', '', '', '', '', '', '', 'P0', '0.067', '0.5', '0.5', '0.05', '0.05', '0.05', '0.05', '3', '0.7', '0.0469'] },
+  ];
+  const fullReply = [
+    { row: 3, model: 'Claude Opus 4.8', spec: '', currency: 'USD', discount: 0.7,
+      prices: [{ kind: 'input', unit: '1M', list: 5, final: 3.5 },
+               { kind: 'output', unit: '1M', list: 25, final: 17.5 }], conf: 'high' },
+    { row: 4, model: 'nano banana 2', spec: 'resolution=1K', currency: 'USD', discount: 0.7,
+      prices: [{ kind: 'media', unit: 'image', list: 0.067, final: 0.0469 }], conf: 'high' },
+    { row: 4, model: 'nano banana 2', spec: 'resolution=1K', currency: 'USD',
+      prices: [{ kind: 'media', unit: 'image', list: 999, final: 999 }], conf: 'low' },
+  ];
+  const fullFetch = mkFetch([{ content: JSON.stringify(fullReply),
+    usage: { prompt_tokens: 120, completion_tokens: 60 } }]);
+  const cfgFull = Object.assign(L.aiDefaultCfg(), { mode: 'proxy', retries: 0, fullBatch: 20 });
+  const fullRes = await L.aiReadFull(fullRows, MODELS, cfgFull, { fetchImpl: fullFetch, fx: 0.15 });
+  ok('完整读取返回 token + media', fullRes.rows.length === 3,
+    JSON.stringify(fullRes.rows.map(r => [r.kind, r.unit, r.price])));
+  ok('文本 input 3.5 / output 17.5',
+    fullRes.rows.some(r => r.kind === 'input' && near(r.price, 3.5)) &&
+    fullRes.rows.some(r => r.kind === 'output' && near(r.price, 17.5)));
+  ok('媒体 image 0.0469', fullRes.rows.some(r => r.kind === 'media' && r.unit === 'image' && near(r.price, 0.0469)),
+    JSON.stringify(fullRes.rows.find(r => r.kind === 'media')));
+  ok('行内不存在的数字被丢弃（防幻觉）', fullRes.dropped.some(d => d.why === '数字不在行内'),
+    JSON.stringify(fullRes.dropped));
+  ok('完整读取 usage 已累计', fullRes.usage.prompt_tokens === 120 && fullRes.usage.completion_tokens === 60);
+
   console.log('\n=== 配置默认值 ===');
   ok('默认走本地代理', L.aiDefaultCfg().mode === 'proxy');
   ok('预设含硅基流动且给的是便宜模型',

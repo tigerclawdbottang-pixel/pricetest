@@ -9,7 +9,7 @@ Agent A - 模型价格采集器
 import json, re, sqlite3, sys, time, os, hashlib
 from collections import Counter
 from datetime import datetime, timezone, date
-import urllib.request, urllib.error
+import urllib.request, urllib.error, urllib.parse
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB   = os.path.join(ROOT, "data", "prices.db")
@@ -18,7 +18,8 @@ os.makedirs(RAW, exist_ok=True)
 
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
-SOURCES = ["openrouter", "fireworks", "wokey", "cheaperinference", "siliconflow"]
+# 采集顺序：由 COLLECTORS 的 key 顺序决定（见文件下方，SOURCES = list(COLLECTORS)），
+# 此处不再重复声明，避免「多份源列表不同步」——这正是 2026-11-02 硬编码 5 源 bug 的根源。
 
 # CNY -> USD 兜底汇率（1 CNY = ? USD），联网取不到时使用
 FALLBACK_FX = 0.1408        # ≈ 1 USD = 7.10 CNY
@@ -27,13 +28,24 @@ FX_FILE = os.path.join(ROOT, "data", "fx.json")
 
 # ---------------------------------------------------------------- http
 def fetch(url, timeout=60):
-    req = urllib.request.Request(url, headers={
-        "User-Agent": UA,
-        "Accept": "text/html,application/json,*/*",
-        "Accept-Language": "en-US,en;q=0.9",
-    })
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.read().decode("utf-8", errors="ignore")
+    # urllib 默认只跟随 301/302/303/307，不跟随 308（永久重定向），手动跟随 Location
+    for _ in range(5):
+        req = urllib.request.Request(url, headers={
+            "User-Agent": UA,
+            "Accept": "text/html,application/json,*/*",
+            "Accept-Language": "en-US,en;q=0.9",
+        })
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return r.read().decode("utf-8", errors="ignore")
+        except urllib.error.HTTPError as e:
+            if e.code == 308:
+                loc = e.headers.get("Location")
+                if loc:
+                    url = urllib.parse.urljoin(url, loc)
+                    continue
+            raise
+    raise RuntimeError(f"fetch: 重定向过多 ({url})")
 
 
 # ------------------------------------------------------------ normalize
@@ -375,21 +387,39 @@ def _extract_json_array(s, start):
 
 
 def ci_row(m):
-    """CheaperInference：token 模型走 input/output；图片/视频走 unitPriceUsd。"""
+    """CheaperInference：token 模型走 input/output；图片/视频走 unitPriceUsd。
+
+    注意：不是所有媒体模型的 unit 都写着 image/video；有的 unit 为 null。
+    只要 type 是 image/video 且返回了 unitPriceUsd，就按媒体价处理。
+    """
+    typ = (m.get("type") or "").strip().lower()
     unit = (m.get("unit") or "").strip().lower()
+    up0 = f(m.get("unitPriceUsd"))
+    is_media = (unit in ("image", "video", "second")
+                or (typ in ("image", "video") and (up0 is not None or bool(m.get("free")))))
     fam, ver = canonical(m.get("id", ""))
     ctx = m.get("contextLength")
     mod = f"{m.get('type','')}/{m.get('group','')}"
-    if unit in ("image", "video"):
-        up = f(m.get("unitPriceUsd"))
+    if is_media:
+        up = up0
         lup = f(m.get("referenceUnitPriceUsd"))
         disc = f(m.get("discountPercent"))
-        if bool(m.get("free")) and up is None:
+        if up is None and bool(m.get("free")):
             up = 0.0
         if up is None:
             return None
+        if up == 0 and not bool(m.get("free")):
+            return None            # 0 通常是“未标价”，不是免费
         if m.get("listPriceKnown") is False:
             lup = None
+        if "second" in unit:
+            u = "second"
+        elif "image" in unit:
+            u = "image"
+        elif "video" in unit:
+            u = "video"
+        else:
+            u = "video" if typ == "video" else "image"
         return dict(
             source="cheaperinference", model_id=m.get("id", ""),
             model_name=m.get("label") or m.get("id", ""),
@@ -398,7 +428,7 @@ def ci_row(m):
             input=None, output=None, cache_read=None, cache_write=None,
             list_input=None, list_output=None, discount=disc,
             context=ctx, modality=mod,
-            unit=unit, unit_price=up, list_unit_price=lup,
+            unit=u, unit_price=up, list_unit_price=lup,
             unit_discount=(disc if disc is not None else pct_discount(up, lup)),
         )
     inp, outp = f(m.get("ourInputPerM")), f(m.get("ourOutputPerM"))
@@ -614,6 +644,178 @@ def _collect_siliconflow_cn():
     return out, len(data), dict(rate=rate, fxsrc=fxsrc)
 
 
+# ------------------------------------------------------------ 6. Venice AI / 7. NEAR AI Cloud
+# 两个独立定价网关，官方页都提供 markdown 价格表（USD / 1M tokens），结构略有差异，
+# 用「表头关键字检测」统一解析，不依赖列顺序。
+#   Venice: docs.venice.ai/overview/pricing.md
+#           表头 Model | ID | Input Price | Output Price | Cache Read | Cache Write | Context | Privacy
+#   NEAR:   near.ai/pricing.md
+#           表头 Model | Context | $/M input | $/M output  （可能含 Provider / Cache read 列）
+# 表格式定价网关：source_id -> [候选 URL]（mdx/md/html 通吃，逐个尝试，首个解析出模型即用）。
+# 加一个新的「表格式定价」网关源，只需在这里加一行，采集器会在下面自动注册。
+GATEWAY_SOURCES = {
+    "venice": [
+        "https://raw.githubusercontent.com/veniceai/api-docs/main/overview/pricing.mdx",
+        "https://raw.githubusercontent.com/veniceai/api-docs/master/overview/pricing.mdx",
+        "https://docs.venice.ai/overview/pricing.md",
+        "https://docs.venice.ai/overview/pricing",
+    ],
+    "nearai": [
+        "https://near.ai/pricing.md",
+        "https://near.ai/pricing",
+    ],
+}
+
+
+def _md_cells(line):
+    """markdown 表格行 -> 单元格列表；非表格行返回 None。"""
+    line = line.strip()
+    if not line.startswith("|"):
+        return None
+    return [c.strip() for c in line.strip().strip("|").split("|")]
+
+
+def _md_tables(text):
+    """提取所有 markdown 表，返回 [(header_cells, [data_rows])]。"""
+    tables, i, lines = [], 0, text.splitlines()
+    while i < len(lines):
+        header = _md_cells(lines[i])
+        if header is None:
+            i += 1
+            continue
+        # 表头下一行是 |---|---| 分隔行
+        if i + 1 < len(lines) and re.fullmatch(r"[:\-\s|]+", lines[i + 1].strip()):
+            i += 2
+        else:
+            i += 1
+        rows = []
+        while i < len(lines):
+            r = _md_cells(lines[i])
+            if r is None:
+                break
+            rows.append(r)
+            i += 1
+        if header and rows:
+            tables.append((header, rows))
+    return tables
+
+
+def _html_tables(html):
+    """提取所有 <table>，返回与 _md_tables 相同结构的 [(header_cells, [data_rows])]。"""
+    tables = []
+    for m in re.finditer(r"<table[^>]*>(.*?)</table>", html, re.S):
+        trs = re.findall(r"<tr[^>]*>(.*?)</tr>", m.group(1), re.S)
+        if len(trs) < 2:
+            continue
+        def cells(tr):
+            return [_html.unescape(re.sub(r"<[^>]+>", "", c)).strip()
+                    for c in re.findall(r"<t[hd][^>]*>(.*?)</t[hd]>", tr, re.S)]
+        header, rows = cells(trs[0]), [cells(tr) for tr in trs[1:]]
+        if header and rows:
+            tables.append((header, rows))
+    return tables
+
+
+def _cell_clean(cell):
+    """去 markdown/HTML 标记，留纯文本。"""
+    c = cell.strip()
+    c = re.sub(r"`([^`]*)`", r"\1", c)                # 反引号
+    c = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", c)     # 链接
+    c = re.sub(r"\*\*?([^*]+)\*\*?", r"\1", c)          # 粗斜体
+    c = re.sub(r"<[^>]+>", "", c)                       # 内联标签
+    return c.strip()
+
+
+def _colmap(headers):
+    """按表头关键字定位各列，返回列下标映射（找不到为 None）。"""
+    h = [_cell_clean(x).lower() for x in headers]
+    def find(keys, exclude=()):
+        for i, cell in enumerate(h):
+            if any(k in cell for k in keys) and not any(e in cell for e in exclude):
+                return i
+        return None
+    name = find(("model name", "model"), ("id", "provider"))
+    mid = find(("model id", "id"))
+    if mid == name:
+        mid = None
+    return {
+        "name": name, "id": mid,
+        "input": find(("input",), ("cache",)),
+        "output": find(("output",), ("cache",)),
+        "cache_read": find(("cache read", "cache-read", "cache hit", "cached read", "cache"),
+                           ("write",)),
+        "cache_write": find(("cache write", "cache-write", "cached write"), ("read",)),
+        "context": find(("context",)),
+    }
+
+
+def _gateway_rows(tables, source):
+    """把 (header, rows) 表格统一转成标准 row dict。"""
+    out = []
+    for header, rows in tables:
+        cm = _colmap(header)
+        if cm["name"] is None and cm["id"] is None:
+            continue
+        name_i = cm["name"] if cm["name"] is not None else cm["id"]
+        for cells in rows:
+            if name_i >= len(cells):
+                continue
+            name = _cell_clean(cells[name_i])
+            # 跳过档位续行（↳ >100K）、分类标题、空行
+            if not name or re.match(r"^[↳→>☰]", name) or name.lower() == "model":
+                continue
+            name = re.sub(r"\s*\*$", "", name).strip()      # 匿名化标记 "*"
+            name = re.sub(r"\s*\([^)]*\)$", "", name).strip()
+            mid = (_cell_clean(cells[cm["id"]])
+                   if cm["id"] is not None and cm["id"] < len(cells) else "")
+            model_id = mid or name
+            fam, ver = canonical(model_id)
+            def num(col):
+                if col is None or col >= len(cells):
+                    return None
+                v = _cell_clean(cells[col])
+                if v.lower() == "free":
+                    return 0.0
+                return f(v)
+            inp, outp = num(cm["input"]), num(cm["output"])
+            if inp is None and outp is None:
+                continue
+            ctx = (parse_ctx(_cell_clean(cells[cm["context"]]))
+                   if cm["context"] is not None and cm["context"] < len(cells) else None)
+            out.append(dict(
+                source=source, model_id=model_id, model_name=name,
+                family=fam, version=ver, provider="",
+                input=inp, output=outp,
+                cache_read=num(cm["cache_read"]), cache_write=num(cm["cache_write"]),
+                list_input=None, list_output=None, discount=None,
+                context=ctx, modality="text",
+                unit="token", unit_price=None, list_unit_price=None, unit_discount=None,
+            ))
+    return out
+
+
+def _make_gateway_collector(source, urls):
+    """生成表格式网关采集器：逐个候选 URL 尝试（mdx/md/html 通吃），
+    首个解析出模型的 URL 即用。加源无需写采集函数，只需在 GATEWAY_SOURCES 加一行。"""
+    def _collect():
+        errs = []
+        for url in urls:
+            try:
+                body = fetch(url)
+                tables = _md_tables(body) or _html_tables(body)
+                if tables:
+                    out = _gateway_rows(tables, source)
+                    if out:
+                        return out, len(out)
+                    errs.append(f"{url}: 有表格但无模型")
+                else:
+                    errs.append(f"{url}: 无表格")
+            except Exception as e:
+                errs.append(f"{url}: {type(e).__name__}: {e}")
+        raise RuntimeError(f"{source}: 所有候选源均失败（{' / '.join(errs)}）")
+    return _collect
+
+
 COLLECTORS = {
     "openrouter": collect_openrouter,
     "fireworks": collect_fireworks,
@@ -621,6 +823,13 @@ COLLECTORS = {
     "cheaperinference": collect_cheaperinference,
     "siliconflow": collect_siliconflow,
 }
+
+# 表格式网关源：从 GATEWAY_SOURCES 自动注册采集器
+for _gid, _urls in GATEWAY_SOURCES.items():
+    COLLECTORS[_gid] = _make_gateway_collector(_gid, _urls)
+
+# 采集顺序 = COLLECTORS 插入顺序（单一真相源）。main() 按此顺序采集。
+SOURCES = list(COLLECTORS)
 
 
 # ---------------------------------------------------------------- DB
@@ -682,6 +891,14 @@ def init_db():
 
 
 def main():
+    # 防御：SOURCES（采集顺序）与 COLLECTORS（采集器）必须一一对应，
+    # 避免加源漏改任一处导致静默缺数据（曾踩 build_site.py 硬编码 5 源的坑）。
+    _s_missing = [s for s in SOURCES if s not in COLLECTORS]
+    _c_extra = [s for s in COLLECTORS if s not in SOURCES]
+    if _s_missing or _c_extra:
+        raise SystemExit(
+            f"SOURCES 与 COLLECTORS 不一致：SOURCES 缺采集器 {_s_missing}，"
+            f"COLLECTORS 未被采集 {_c_extra}")
     only = sys.argv[1] if len(sys.argv) > 1 else None
     today = date.today().isoformat()
     con = init_db()

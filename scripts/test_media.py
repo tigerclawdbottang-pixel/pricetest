@@ -49,6 +49,13 @@ r = C.ci_row(ci_tok)
 ok("token 模型保持原口径", r and r["unit"] == "token" and r["input"] == 1.32 and r["output"] == 3.96,
    r and (r["unit"], r["input"], r["output"]))
 
+ci_unit_null = dict(ci_video, unit=None, unitPriceUsd=0.35)
+r = C.ci_row(ci_unit_null)
+ok("unit 为空但 type=video 且有 unitPriceUsd → 按视频价", r and r["unit"] == "video" and r["unit_price"] == 0.35,
+   r and (r["unit"], r["unit_price"]))
+ci_zero = dict(ci_video, unitPriceUsd=0, free=False)
+ok("媒体价为 0 且 free=false → 视为未标价（丢弃）", C.ci_row(ci_zero) is None)
+
 print("\n=== SiliconFlow ===")
 sf_img = {"modelName": "Qwen/Qwen-Image", "DisplayName": "Qwen-Image", "mf": "Qwen",
           "type": "image", "subType": "text-to-image", "priceUnit": "/ Image",

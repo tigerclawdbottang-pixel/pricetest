@@ -54,6 +54,12 @@ def ci():
     for m in hits[:6]:
         print("-" * 60)
         print(brief(m))
+    seed = [m for m in data if "seedance" in (m.get("id") or "").lower()]
+    if seed:
+        print("\nSeedance 原始对象:")
+        for m in seed:
+            print("-" * 60)
+            print(brief(m, 1800))
 
 
 def openrouter():

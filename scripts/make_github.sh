@@ -26,7 +26,7 @@ zip -q -r "$ZIP" \
   data/official_prices.json data/official_auto.json data/fx.json data/llm_key.example.json \
   scripts/collect.py scripts/fetch_official.py scripts/build_site.py scripts/verify.py scripts/write_llm_key.py \
   scripts/run_daily.sh scripts/make_dist.sh scripts/make_github.sh \
-  scripts/smoke.js scripts/test_parsers.js scripts/test_official_col.js scripts/test_upload_match.js scripts/test_llm.js scripts/test_upload_tier.js scripts/test_ai_e2e.js scripts/test_media.py scripts/diag_media.py scripts/llm_proxy.py scripts/start_ai.command \
+  scripts/smoke.js scripts/test_parsers.js scripts/test_official_col.js scripts/test_upload_match.js scripts/test_llm.js scripts/test_upload_tier.js scripts/test_ai_e2e.js scripts/test_media.py scripts/test_gateway_parsers.py scripts/diag_media.py scripts/llm_proxy.py scripts/start_ai.command \
   scripts/fixtures/test.xlsx scripts/fixtures/test.docx \
   reports/latest.md \
   -x "*.DS_Store" "dist/*" "snapshots/*" "node_modules/*" \

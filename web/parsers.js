@@ -60,11 +60,11 @@ function xmlRows(xml) {
   let rm;
   while ((rm = rowRe.exec(xml))) {
     const row = [];
-    const cellRe = /<c\b([^>]*)>([\s\S]*?)<\/c>|<c\b([^>]*)\/>/g;
+    const cellRe = /<c\b([^>]*)\/>|<c\b([^>]*)>([\s\S]*?)<\/c>/g;  // 自闭合必须放前面，否则空单元格会吞掉下一格
     let cm;
     while ((cm = cellRe.exec(rm[1] || ''))) {
-      const attrs = cm[1] || cm[3] || '';
-      const inner = cm[2] || '';
+      const attrs = cm[1] || cm[2] || '';
+      const inner = cm[3] || '';
       const t = (/t="([^"]*)"/.exec(attrs) || [])[1] || 'n';
       const vm = /<v>([\s\S]*?)<\/v>/.exec(inner) || /<t[^>]*>([\s\S]*?)<\/t>/.exec(inner);
       const v = vm ? xmlDecode(vm[1]) : '';
@@ -164,6 +164,15 @@ function parseDelim(text) {
   const seps = ['\t', ',', ';', '|'];
   let best = '\t', bestN = 0;
   for (const s of seps) { const c = lines[0].split(s).length; if (c > bestN) { bestN = c; best = s; } }
+  // 没有表格分隔符时，兼容「模型名 三个空格 输入价 输出价」或「模型名 空格 价格」的粘贴
+  if (bestN <= 1) {
+    return lines.map(l => {
+      const m = l.match(/^(.*?)\s+(-?\d[\d.,]*)\s+(-?\d[\d.,]*)(?:\s+.*)?$/);
+      if (m) return [m[1].trim(), m[2], m[3]];
+      const m1 = l.match(/^(.*?)\s+(-?\d[\d.,]*)\s*$/);
+      return m1 ? [m1[1].trim(), m1[2]] : [l.trim()];
+    });
+  }
   return lines.map(l => l.split(best).map(x => x.trim().replace(/^"|"$/g, '')));
 }
 
@@ -334,11 +343,11 @@ const COL_RULES = [
   // 顺序即优先级：越靠前越先占位
   ['cacheWrite', /(cache[\s-]*(write|storage)|缓存存储|写入缓存)/i],
   ['cacheRead',  /(cache[\s-]*(read|hit)|cached[\s-]*input|缓存命中|命中缓存)/i],
-  ['output',     /(output|输出|out\s*\()/i],
-  ['input',      /(input|输入|in\s*\()/i],
-  ['tier',       /(condition|tokens?\(|区间|上下文|context|档位|limit)/i],
+  ['output',     /(output\s*\(|output.*(?:usd|price|token|m\s*tok)|输出.*(?:价|usd|token|m\s*tok|单价)|out\s*\()/i],
+  ['input',      /(input\s*\(|input.*(?:usd|price|token|m\s*tok)|输入.*(?:价|usd|token|m\s*tok|单价)|in\s*\()/i],
+  ['tier',       /(condition|tokens?\s*\(|区间|档位|\blimit\b)/i],
   ['discount',   /(折扣|discount)/i],
-  ['model',      /(model\s*name|模型名称|模型名|模型|name)/i],
+  ['model',      /(model\s*name|模型名称|模型名|^model$|^模型$)/i],
 ];
 function detectColumns(rows) {
   const cols = {};
@@ -376,6 +385,7 @@ function tierLabelOf(cells, cols, excludeIdx) {
     if (guessPrice(c) != null) continue;
     if (/^[\d.,\s]+$/.test(s)) continue;
     if (s.length > 26) continue;
+    if (!readTier(s)) continue;          // 只认真正的区间/档位文本，避免把“文本”“模型系列”当档位
     return s.replace(/\s+/g, ' ').trim();
   }
   return '';

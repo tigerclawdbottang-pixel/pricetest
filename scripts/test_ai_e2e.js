@@ -53,6 +53,7 @@ const PASTE = [
     mode, proxyUrl: PROXY + '/extract', provider: 'custom',
     endpoint: mode === 'direct' ? endpoint : '', model: MODEL, key: key,
     batch: 25, maxRows: 300, retries: 1, timeoutMs: 90000,
+    autoFull: false,   // 这个测试只验证「AI 补识别（仅漏行）」，关闭自动完整读取
   });
   const dom = new JSDOM(fs.readFileSync(HTML, 'utf-8'), {
     runScripts: 'dangerously', url: 'https://localhost/', pretendToBeVisual: true,
