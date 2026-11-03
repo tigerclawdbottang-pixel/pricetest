@@ -30,6 +30,113 @@ function gpuColor(map, name) {
   return map[name] || '#8A8A96';
 }
 
+/* ---------------- 原帖预览：悬停浮层 + 点击详情层 ---------------- */
+const GPU_LAST = { gpu: [], gpsocial: [] };
+let GPU_TIP = null;
+
+function gpuTipEl() {
+  if (!GPU_TIP) {
+    GPU_TIP = document.createElement('div');
+    GPU_TIP.className = 'gpu-tip';
+    document.body.appendChild(GPU_TIP);
+  }
+  return GPU_TIP;
+}
+
+function gpuTipMove(e) {
+  const t = gpuTipEl();
+  const pad = 14, w = t.offsetWidth, h = t.offsetHeight;
+  let x = e.clientX + pad, y = e.clientY + pad;
+  if (x + w > window.innerWidth - 8) x = e.clientX - w - pad;
+  if (y + h > window.innerHeight - 8) y = e.clientY - h - pad;
+  t.style.left = Math.max(8, x) + 'px';
+  t.style.top = Math.max(8, y) + 'px';
+}
+
+function gpuTipHide() {
+  if (GPU_TIP) GPU_TIP.classList.remove('on');
+}
+
+function gpuBindTips(root) {
+  (root || document).querySelectorAll('[data-tip]').forEach(el => {
+    el.onmouseenter = e => {
+      const t = gpuTipEl();
+      t.textContent = el.getAttribute('data-tip') || '';
+      t.classList.add('on');
+      gpuTipMove(e);
+    };
+    el.onmousemove = gpuTipMove;
+    el.onmouseleave = gpuTipHide;
+  });
+}
+
+/* mock 数据里的 direct_url 是 social.example.com，点了必然打不开 */
+function gpuIsMock(url) {
+  return /^https?:\/\/(?:[a-z0-9-]+\.)*example\.(?:com|org|net)(?:[/:?#]|$)/i.test(String(url || ''));
+}
+
+/* mock 帖子的兜底：跳转到来源平台的真实搜索页 */
+function gpuSearchUrl(platform, query) {
+  const q = encodeURIComponent(query || '');
+  switch (platform) {
+    case 'Twitter/X': return `https://x.com/search?q=${q}`;
+    case 'Facebook': return `https://www.facebook.com/search/top?q=${q}`;
+    case 'Reddit': return `https://www.reddit.com/search/?q=${q}`;
+    case 'Discord': return `https://discord.com/servers?query=${q}`;
+    case 'HackerNews': return `https://hn.algolia.com/?q=${q}`;
+    case '小红书': return `https://www.xiaohongshu.com/search_result?keyword=${q}`;
+    case 'Telegram': return `https://www.google.com/search?q=${encodeURIComponent('site:t.me ' + (query || ''))}`;
+    default: return `https://www.google.com/search?q=${q}`;
+  }
+}
+
+function gpuModalOpen(r) {
+  if (!r) return;
+  let box = document.getElementById('gpuModal');
+  if (!box) {
+    box = document.createElement('div');
+    box.id = 'gpuModal';
+    box.className = 'gpu-modal';
+    box.innerHTML = '<div class="gpu-modal-box">'
+      + '<button class="gpu-modal-x" aria-label="关闭">×</button>'
+      + '<div class="gpu-modal-body"></div></div>';
+    document.body.appendChild(box);
+    box.addEventListener('click', e => { if (e.target === box) box.classList.remove('on'); });
+    box.querySelector('.gpu-modal-x').onclick = () => box.classList.remove('on');
+  }
+  gpuTipHide();
+  const cnt = r.extracted_gpu_count == null ? '?' : r.extracted_gpu_count;
+  const q = `${cnt}x ${r.extracted_gpu_model || ''} 出租`;
+  box.querySelector('.gpu-modal-body').innerHTML = `
+    <div class="gpu-modal-head">
+      <span class="dotst" style="background:${gpuColor(GPU_SOCIAL_COLORS, r.source_platform)}"></span>
+      <b>${esc(r.source_platform)}</b>
+      <span class="mven">${esc(r.poster_name || '—')}</span>
+    </div>
+    <div class="gpu-modal-post">${esc(r.post_text)}</div>
+    <div class="gpu-modal-meta">
+      <span>型号 <b>${esc(cnt + 'x ' + (r.extracted_gpu_model || '未知'))}</b></span>
+      <span>报价 <b>${esc(r.extracted_price_desc || '面议')}</b></span>
+      <span>联系方式 <b>${esc(r.contact_info || '未提供')}</b></span>
+    </div>
+    <div class="gpu-modal-acts">
+      <a class="btn primary sm" href="${esc(gpuSearchUrl(r.source_platform, q))}"
+         target="_blank" rel="noreferrer noopener">在 ${esc(r.source_platform)} 搜索同款 ↗</a>
+      <span class="sm">打开来源平台的真实搜索页</span>
+    </div>
+    <div class="gpu-modal-note">该帖为演示数据，原帖地址是 mock（${esc(r.direct_url)}），
+      未指向真实页面。接入真实采集源后，这里会直接跳转到原帖。</div>`;
+  box.classList.add('on');
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Escape') return;
+  gpuTipHide();
+  const m = document.getElementById('gpuModal');
+  if (m) m.classList.remove('on');
+});
+window.addEventListener('scroll', gpuTipHide, true);
+
 /* 后端存 naive UTC：补 Z 再按本地时区显示，避免差一个时区 */
 function gpuTime(iso) {
   if (!iso) return '—';
@@ -140,7 +247,7 @@ function gpuCards(kind, pack) {
 }
 
 /* ---------------- 表格 ---------------- */
-function gpuRowHtml(kind, r, lh) {
+function gpuRowHtml(kind, r, lh, idx) {
   if (kind === 'gpu') {
     const v = gpuPrice('gpu', r);
     const stock = (r.available_stock || 0) > 0
@@ -158,12 +265,17 @@ function gpuRowHtml(kind, r, lh) {
   const v = gpuPrice('gpsocial', r);
   const priceTxt = r.extracted_price_desc || '价格面议';
   const priceCls = r.extracted_price_desc ? gpuPillCls(v, lh) : 'mut';
+  // 悬停浮层内容：渠道 + 发布者 + 全文
+  const tip = `${r.source_platform} · ${r.poster_name || '—'}\n\n${r.post_text || ''}`;
+  const act = gpuIsMock(r.direct_url)
+    ? `<button class="link-btn social" data-post-idx="${idx}" data-tip="${esc(tip)}">查看原帖 ↗</button>`
+    : `<a class="link-btn social" href="${esc(r.direct_url)}" target="_blank" rel="noreferrer noopener" data-tip="${esc(tip)}">查看原帖 ↗</a>`;
   return `<tr>
     <td class="l"><span class="dotst" style="background:${gpuColor(GPU_SOCIAL_COLORS, r.source_platform)}"></span><span class="mname">${esc(r.source_platform)}</span><br><span class="mven">${esc(r.poster_name || '—')}</span></td>
     <td class="l"><span class="mono">${esc(r.extracted_gpu_count == null ? '?' : r.extracted_gpu_count)}x ${esc(r.extracted_gpu_model || '未知型号')}</span><br><span class="pill price ${priceCls}" style="margin-top:4px">${esc(priceTxt)}</span></td>
-    <td class="l"><div class="post-text">${esc(r.post_text)}</div></td>
+    <td class="l"><div class="post-text" data-tip="${esc(tip)}">${esc(r.post_text)}</div></td>
     <td class="l"><span class="contact${r.contact_info ? '' : ' empty'}">${esc(r.contact_info || '—')}</span></td>
-    <td class="l"><a class="link-btn social" href="${esc(r.direct_url)}" target="_blank" rel="noreferrer noopener">查看原帖 ↗</a></td>
+    <td class="l">${act}</td>
   </tr>`;
 }
 
@@ -209,8 +321,16 @@ function gpuRender(kind) {
     : '<th class="l">来源 / 发布者</th><th class="l">提取摘要</th><th class="l">原始帖子</th><th class="l">联系方式</th><th class="l">操作</th>';
 
   tableEl.innerHTML = '<table><thead><tr>' + head + '</tr></thead><tbody>'
-    + list.map(r => gpuRowHtml(kind, r, lh)).join('')
+    + list.map((r, i) => gpuRowHtml(kind, r, lh, i)).join('')
     + '</tbody></table>';
+
+  if (kind === 'gpsocial') {
+    GPU_LAST.gpsocial = list;
+    gpuBindTips(tableEl);
+    tableEl.querySelectorAll('[data-post-idx]').forEach(btn => {
+      btn.onclick = () => gpuModalOpen(GPU_LAST.gpsocial[Number(btn.dataset.postIdx)]);
+    });
+  }
 }
 
 /* ---------------- 筛选控件 ---------------- */
