@@ -15,6 +15,7 @@ DB   = os.path.join(ROOT, "data", "prices.db")
 OUT  = os.path.join(ROOT, "web", "data.json")
 MANUAL_JSON = os.path.join(ROOT, "data", "official_prices.json")   # 人工维护（最优先）
 AUTO_JSON   = os.path.join(ROOT, "data", "official_auto.json")     # 自动抓取（次优先）
+GPU_JSON    = os.path.join(ROOT, "data", "gpu_snapshot.json")      # gpu-radar 快照（collect_gpu.py 生成）
 
 # 官网价格来源优先级：人工维护 > 自动抓取 > OpenRouter 兜底
 OFFICIAL = {}
@@ -270,6 +271,21 @@ def _check_source_sync():
             "源列表不一致：请同步 collect.py 的 COLLECTORS/GATEWAY_SOURCES 与 build_site.py 的 SOURCES")
 
 
+def load_gpu():
+    """读取 GPU 快照（可选）：没有就返回 None，页面显示空状态而不报错。"""
+    if not os.path.exists(GPU_JSON):
+        print("  GPU：未找到 data/gpu_snapshot.json（先跑 scripts/collect_gpu.py）", file=sys.stderr)
+        return None
+    try:
+        with open(GPU_JSON, encoding="utf-8") as fh:
+            g = json.load(fh)
+    except Exception as e:
+        print(f"  GPU：gpu_snapshot.json 读取失败 {e}", file=sys.stderr)
+        return None
+    print(f"  GPU：云资源 {len(g.get('listings') or [])} 条 / 社媒线索 {len(g.get('leads') or [])} 条")
+    return g
+
+
 def main():
     _check_source_sync()
     load_official()
@@ -277,6 +293,7 @@ def main():
     if not os.path.exists(DB):
         print("DB 不存在，请先运行 collect.py", file=sys.stderr)
         return 1
+    gpu_payload = load_gpu()
     con = sqlite3.connect(DB)
     con.row_factory = sqlite3.Row
     c = con.cursor()
@@ -472,6 +489,7 @@ def main():
             n_fallback=sum(1 for m in models if m["official"] and m["official"]["src"] == "openrouter"),
             n_none=sum(1 for m in models if not m["official"]),
         ),
+        gpu=gpu_payload,
     )
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     with open(OUT, "w") as fh:
@@ -483,7 +501,8 @@ def main():
     css = open(os.path.join(W, "style.css"), encoding="utf-8").read()
     js = (open(os.path.join(W, "parsers.js"), encoding="utf-8").read() + "\n"
           + open(os.path.join(W, "llm.js"), encoding="utf-8").read() + "\n"
-          + open(os.path.join(W, "app.js"), encoding="utf-8").read())
+          + open(os.path.join(W, "app.js"), encoding="utf-8").read() + "\n"
+          + open(os.path.join(W, "gpu.js"), encoding="utf-8").read())
     data_js = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).replace("</script>", r"<\/script>")
     # ---- 内置 AI 密钥（可选）----
     # 存在 data/llm_key.json 时把密钥混淆后写进页面，打开即可直接用 AI 功能。

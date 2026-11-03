@@ -46,6 +46,8 @@
   </div>
   <div class="tabs">
     <div class="tab on" data-t="compare">总览对比</div>
+    <div class="tab" data-t="gpu">GPU 资源池</div>
+    <div class="tab" data-t="gpsocial">GPU 社媒线索</div>
     <div class="tab" data-t="watch">关注模型</div>
     <div class="tab" data-t="media">图像 / 视频</div>
     <div class="tab" data-t="trend">价格走势</div>
@@ -112,6 +114,68 @@
   <div class="grid g4" id="cards"></div>
   <div class="chartbox" style="margin-top:12px"><h3 id="chartTitle">Top 10 模型 · 各源输入价</h3><div id="chart"></div></div>
   <div class="tw" id="top10" style="margin-top:12px;max-height:none"></div>
+</div>
+
+<!-- ============ GPU 资源池 ============ -->
+<div class="pane" id="p-gpu">
+  <div class="pagehead">
+    <div>
+      <h1>GPU 资源池</h1>
+      <p>统一纳管云厂商标准 API 的 GPU 现货报价 · 单位 USD / 卡·小时</p>
+    </div>
+    <div class="meta">
+      <span class="stat-chip"><span class="live"></span><span id="gpuProv">—</span> providers</span>
+      <span class="cnt" id="gpuCount"></span>
+    </div>
+  </div>
+  <div class="grid g4" id="gpuCards"></div>
+  <div class="bar" style="margin-top:14px">
+    <label class="search">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+        <circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2"/>
+      </svg>
+      <input class="inp" id="gpuQ" placeholder="搜索型号 / 平台 / 地区…">
+    </label>
+    <select class="inp" id="gpuModel"></select>
+    <select class="inp" id="gpuPlatform"></select>
+    <input class="inp" id="gpuMax" type="number" min="0" step="0.01" placeholder="最高价 $/h" style="width:120px">
+    <span class="spacer"></span>
+    <span class="chip on"><span class="sw" style="background:#6D5AE6"></span>STANDARD API</span>
+  </div>
+  <div class="note">价格为 <b>USD / 卡·小时</b>，绿色 = 当前列表最低价，红色 = 最高价。
+    库存为平台返回的可租实例数，点击「前往租赁」跳转到对应平台下单页。
+    数据为构建时快照，更新需重跑 <span class="mono">scripts/collect_gpu.py</span> 后重新构建。</div>
+  <div class="tw" id="gpuTable"></div>
+</div>
+
+<!-- ============ GPU 社媒线索 ============ -->
+<div class="pane" id="p-gpsocial">
+  <div class="pagehead">
+    <div>
+      <h1>GPU 社媒线索</h1>
+      <p>从社媒帖子提取的个人 / 小机房闲置算力供给 · 自动判定出租意图</p>
+    </div>
+    <div class="meta">
+      <span class="stat-chip"><span class="live"></span><span id="gsProv">—</span> 个渠道</span>
+      <span class="cnt" id="gsCount"></span>
+    </div>
+  </div>
+  <div class="grid g4" id="gsCards"></div>
+  <div class="bar" style="margin-top:14px">
+    <label class="search">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+        <circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2"/>
+      </svg>
+      <input class="inp" id="gsQ" placeholder="搜索型号 / 渠道 / 帖子正文…">
+    </label>
+    <select class="inp" id="gsModel"></select>
+    <select class="inp" id="gsPlatform"></select>
+    <span class="spacer"></span>
+    <span class="chip on"><span class="sw" style="background:#D29922"></span>SOCIAL LLM</span>
+  </div>
+  <div class="note">系统先判定是否为<b>出租意图</b>再抽取型号、卡数、价格与联系方式，分析类、求购类帖子会被过滤。
+    绿色为列表最低价，红色为最高价。数据为构建时快照。</div>
+  <div class="tw" id="gsTable"></div>
 </div>
 
 <!-- ============ 图像 / 视频 ============ -->

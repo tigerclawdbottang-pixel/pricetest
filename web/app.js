@@ -1436,6 +1436,8 @@ function switchTab(t) {
   if (t === 'media') renderMedia();
   if (t === 'trend') renderTrend();
   if (t === 'status') renderStatus();
+  if (t === 'gpu') renderGpu();
+  if (t === 'gpsocial') renderGpuSocial();
 }
 function init() {
   // 源 chips

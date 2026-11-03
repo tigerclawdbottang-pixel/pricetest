@@ -23,6 +23,21 @@ bash scripts/run_daily.sh
 0 9 * * * bash /path/to/modelprice/scripts/run_daily.sh
 ```
 
+## GPU 算力栏目（与 gpu-radar 合并）
+
+页面在「总览对比」之后多了两个栏目：**GPU 资源池**（云平台 GPU 现货报价，USD / 卡·小时）和 **GPU 社媒线索**（从社媒帖子提取的个人 / 小机房闲置供给）。
+
+这两个栏目的数据不来自本站采集器，而是从 gpu-radar 项目的 SQLite 导出的快照：
+
+```bash
+python3 scripts/collect_gpu.py    # 生成 data/gpu_snapshot.json
+python3 scripts/build_site.py     # 构建时自动并入 payload.gpu
+```
+
+默认读 `~/Documents/TAI/gpu-radar/backend/gpu_radar.db`，可用 `GPU_RADAR_DB=/path/to/gpu_radar.db` 覆盖。找不到数据库时只打印警告、构建照常进行，两个栏目显示空状态。
+
+数据是**构建时快照**：想更新 GPU 部分，先让 gpu-radar 后端跑过一轮采集，再重跑上面两条命令（`run_daily.sh` 已自动包含 collect_gpu.py）。
+
 ## 三个 Agent
 
 | Agent | 职责 | 入口 |
