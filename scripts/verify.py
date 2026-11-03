@@ -18,7 +18,17 @@ os.makedirs(REPORTS, exist_ok=True)
 
 SRC_LABEL = {"openrouter": "OpenRouter", "fireworks": "Fireworks",
              "wokey": "Wokey", "cheaperinference": "CheaperInference",
-             "siliconflow": "硅基流动 SiliconFlow"}
+             "siliconflow": "硅基流动 SiliconFlow",
+             "venice": "Venice AI", "nearai": "NEAR AI Cloud"}
+# 源列表以 collect.py 为单一真相源；SRC_LABEL 只提供显示名，缺名也不漏检查。
+try:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from collect import SOURCES as _ALL_SRC
+except Exception:
+    _ALL_SRC = list(SRC_LABEL)
+for _s in _ALL_SRC:
+    SRC_LABEL.setdefault(_s, _s)
+
 # 异动阈值：相对变化 >30% 或 绝对变化 > 0.5 USD/M，视为显著
 REL_T, ABS_T = 0.30, 0.5
 

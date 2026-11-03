@@ -726,6 +726,16 @@ def _cell_clean(cell):
     return c.strip()
 
 
+def _price_scale(header_cells):
+    """探测价格列单位口径：表头含 /1K、per 1,000 等表示按千 token 计价时返回 1000（换算到 /1M），
+    其余按 /1M 视为 1。只传入输入/输出/缓存这些价格列的表头，避免 context 列的 1,000,000 误触发。"""
+    h = " ".join(header_cells)
+    if re.search(r"(/|\bper\s+|每\s*)1[,\s]?000\b", h) or \
+       re.search(r"(/|\bper\s+|每\s*)1\s*k\b", h) or re.search(r"每\s*千", h):
+        return 1000.0
+    return 1.0
+
+
 def _colmap(headers):
     """按表头关键字定位各列，返回列下标映射（找不到为 None）。"""
     h = [_cell_clean(x).lower() for x in headers]
@@ -738,7 +748,7 @@ def _colmap(headers):
     mid = find(("model id", "id"))
     if mid == name:
         mid = None
-    return {
+    cm = {
         "name": name, "id": mid,
         "input": find(("input",), ("cache",)),
         "output": find(("output",), ("cache",)),
@@ -747,6 +757,11 @@ def _colmap(headers):
         "cache_write": find(("cache write", "cache-write", "cached write"), ("read",)),
         "context": find(("context",)),
     }
+    # 单位口径：仅看价格列表头，/1K 则整体 ×1000 归一到 /1M tokens
+    price_cols = [cm[k] for k in ("input", "output", "cache_read", "cache_write")
+                  if cm[k] is not None]
+    cm["scale"] = _price_scale([h[i] for i in price_cols])
+    return cm
 
 
 def _gateway_rows(tables, source):
@@ -770,13 +785,15 @@ def _gateway_rows(tables, source):
                    if cm["id"] is not None and cm["id"] < len(cells) else "")
             model_id = mid or name
             fam, ver = canonical(model_id)
+            scale = cm.get("scale", 1.0)
             def num(col):
                 if col is None or col >= len(cells):
                     return None
                 v = _cell_clean(cells[col])
                 if v.lower() == "free":
                     return 0.0
-                return f(v)
+                x = f(v)
+                return None if x is None else x * scale
             inp, outp = num(cm["input"]), num(cm["output"])
             if inp is None and outp is None:
                 continue
@@ -891,14 +908,8 @@ def init_db():
 
 
 def main():
-    # 防御：SOURCES（采集顺序）与 COLLECTORS（采集器）必须一一对应，
-    # 避免加源漏改任一处导致静默缺数据（曾踩 build_site.py 硬编码 5 源的坑）。
-    _s_missing = [s for s in SOURCES if s not in COLLECTORS]
-    _c_extra = [s for s in COLLECTORS if s not in SOURCES]
-    if _s_missing or _c_extra:
-        raise SystemExit(
-            f"SOURCES 与 COLLECTORS 不一致：SOURCES 缺采集器 {_s_missing}，"
-            f"COLLECTORS 未被采集 {_c_extra}")
+    # 注：SOURCES 由 COLLECTORS 派生（见上），本文件内恒一致，无需再断言。
+    # 跨文件一致性（collect 的源 vs build_site 展示的源）由 build_site._check_source_sync() 负责。
     only = sys.argv[1] if len(sys.argv) > 1 else None
     today = date.today().isoformat()
     con = init_db()

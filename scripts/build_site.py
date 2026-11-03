@@ -247,7 +247,31 @@ def tokenkey(s):
     return "|".join(sorted(toks))
 
 
+def _check_source_sync():
+    """跨文件校验：collect.py 采集的源必须与 build_site.py 展示的源一致。
+    两侧列表分处两个文件，漏改任一侧会「采了不展示」或「展示却无数据」——
+    2026-11-02 加 venice/nearai 时就踩过这类坑。"""
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import collect as _col
+    except Exception as e:
+        print(f"[warn] 无法导入 collect.py，跳过源一致性校验：{e}", file=sys.stderr)
+        return
+    collected = list(_col.SOURCES)
+    shown = [s["id"] for s in SOURCES]
+    only_collected = [s for s in collected if s not in shown]
+    only_shown = [s for s in shown if s not in collected]
+    if only_collected:
+        print(f"[ERROR] 已采集但未在 build_site.SOURCES 展示：{only_collected}", file=sys.stderr)
+    if only_shown:
+        print(f"[ERROR] 在 build_site.SOURCES 展示但无采集器：{only_shown}", file=sys.stderr)
+    if only_collected or only_shown:
+        raise SystemExit(
+            "源列表不一致：请同步 collect.py 的 COLLECTORS/GATEWAY_SOURCES 与 build_site.py 的 SOURCES")
+
+
 def main():
+    _check_source_sync()
     load_official()
     load_fx()
     if not os.path.exists(DB):

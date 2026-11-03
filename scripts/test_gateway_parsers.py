@@ -91,5 +91,42 @@ hr = C._gateway_rows(ht, "nearai")
 ok("HTML 解析出 1 个模型 input=0.17", len(hr) == 1 and hr[0]["input"] == 0.17,
    [(r["model_name"], r["input"]) for r in hr])
 
+print("\n=== 单位口径 /1K 自动换算到 /1M ===")
+K_MD = """| Model | Input ($/1K tokens) | Output ($/1K tokens) |
+|---|---|---|
+| Cheap Model | $0.0005 | $0.0015 |
+"""
+k_rows = C._gateway_rows(C._md_tables(K_MD), "x")
+ok("解析出 1 个模型", len(k_rows) == 1, k_rows)
+ok("  input 0.0005 → 0.5（×1000）", k_rows[0]["input"] == 0.5, k_rows[0]["input"])
+ok("  output 0.0015 → 1.5（×1000）", k_rows[0]["output"] == 1.5, k_rows[0]["output"])
+
+K_MD2 = """| Model | Context | Price per 1,000 input | Price per 1,000 output |
+|---|---|---|---|
+| Another | 128K | 0.002 | 0.006 |
+"""
+k2 = C._gateway_rows(C._md_tables(K_MD2), "x")
+ok("per 1,000 也换算（input 0.002→2.0）", k2 and k2[0]["input"] == 2.0, k2[0]["input"] if k2 else None)
+ok("  context 不被误乘（仍 128000）", k2 and k2[0]["context"] == 128000, k2[0]["context"] if k2 else None)
+
+M_MD = """| Model | Input ($/1M tokens) | Output ($/1M tokens) |
+|---|---|---|
+| Normal | $3.00 | $15.00 |
+"""
+m_rows = C._gateway_rows(C._md_tables(M_MD), "x")
+ok("/1M 不换算（input 3.0）", m_rows[0]["input"] == 3.0, m_rows[0]["input"])
+
+print("\n=== 跨文件源一致性校验 ===")
+try:
+    import build_site as B
+    collected = C.SOURCES
+    shown = [s["id"] for s in B.SOURCES]
+    ok("collect 与 build_site 源列表一致", collected == shown,
+       f"collect={collected} build={shown}")
+    B._check_source_sync()   # 不一致会 SystemExit，跑到这里即通过
+    ok("_check_source_sync() 正常返回", True)
+except SystemExit as e:
+    ok("_check_source_sync() 正常返回", False, e)
+
 print(f"\n结果: {'❌ ' + str(fail_n) + ' 项失败' if fail_n else '✅ 全部通过'}  ({pass_n} passed, {fail_n} failed)\n")
 sys.exit(1 if fail_n else 0)
