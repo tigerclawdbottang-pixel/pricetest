@@ -70,10 +70,8 @@ function gpuBindTips(root) {
   });
 }
 
-/* mock 数据里的 direct_url 是 social.example.com，点了必然打不开 */
-function gpuIsMock(url) {
-  return /^https?:\/\/(?:[a-z0-9-]+\.)*example\.(?:com|org|net)(?:[/:?#]|$)/i.test(String(url || ''));
-}
+/* mock 社媒线索的 direct_url 是「结构真实但帖子 ID 编造」的地址（如 x.com/xxx/status/9000），
+   点了照样 404，所以统一走站内详情弹窗，不跳转外链。 */
 
 /* mock 帖子的兜底：跳转到来源平台的真实搜索页 */
 function gpuSearchUrl(platform, query) {
@@ -107,11 +105,23 @@ function gpuModalOpen(r) {
   gpuTipHide();
   const cnt = r.extracted_gpu_count == null ? '?' : r.extracted_gpu_count;
   const q = `${cnt}x ${r.extracted_gpu_model || ''} 出租`;
+  const topic = r.topic ? `<span class="tag ai">${esc(r.topic)}</span>` : '';
+  const firstSeen = r.first_seen_at ? gpuTime(r.first_seen_at) : '—';
+  const lastSeen = r.last_seen_at ? gpuTime(r.last_seen_at) : '—';
+  // 原始载荷：快照里是字符串，尝试解析后缩进格式化；解析失败就原样展示
+  let rawHtml = '';
+  if (r.raw_json_data) {
+    let pretty = r.raw_json_data;
+    try { pretty = JSON.stringify(JSON.parse(r.raw_json_data), null, 2); } catch (e) {}
+    rawHtml = `<div class="gpu-modal-sec">原始载荷</div>`
+      + `<pre class="gpu-modal-raw">${esc(pretty)}</pre>`;
+  }
   box.querySelector('.gpu-modal-body').innerHTML = `
     <div class="gpu-modal-head">
       <span class="dotst" style="background:${gpuColor(GPU_SOCIAL_COLORS, r.source_platform)}"></span>
       <b>${esc(r.source_platform)}</b>
       <span class="mven">${esc(r.poster_name || '—')}</span>
+      ${topic}
     </div>
     <div class="gpu-modal-post">${esc(r.post_text)}</div>
     <div class="gpu-modal-meta">
@@ -119,13 +129,17 @@ function gpuModalOpen(r) {
       <span>报价 <b>${esc(r.extracted_price_desc || '面议')}</b></span>
       <span>联系方式 <b>${esc(r.contact_info || '未提供')}</b></span>
     </div>
+    <div class="gpu-modal-time">
+      首次采集 <b>${esc(firstSeen)}</b> · 最近采集 <b>${esc(lastSeen)}</b>
+    </div>
+    ${rawHtml}
     <div class="gpu-modal-acts">
       <a class="btn primary sm" href="${esc(gpuSearchUrl(r.source_platform, q))}"
          target="_blank" rel="noreferrer noopener">在 ${esc(r.source_platform)} 搜索同款 ↗</a>
       <span class="sm">打开来源平台的真实搜索页</span>
     </div>
-    <div class="gpu-modal-note">该帖为演示数据，原帖地址是 mock（${esc(r.direct_url)}），
-      未指向真实页面。接入真实采集源后，这里会直接跳转到原帖。</div>`;
+    <div class="gpu-modal-note">该帖为演示数据，原帖地址（${esc(r.direct_url)}）的帖子 ID 为编造，
+      未指向真实页面；接入真实采集源后这里会直接跳转原帖。</div>`;
   box.classList.add('on');
 }
 
@@ -267,9 +281,8 @@ function gpuRowHtml(kind, r, lh, idx) {
   const priceCls = r.extracted_price_desc ? gpuPillCls(v, lh) : 'mut';
   // 悬停浮层内容：渠道 + 发布者 + 全文
   const tip = `${r.source_platform} · ${r.poster_name || '—'}\n\n${r.post_text || ''}`;
-  const act = gpuIsMock(r.direct_url)
-    ? `<button class="link-btn social" data-post-idx="${idx}" data-tip="${esc(tip)}">查看原帖 ↗</button>`
-    : `<a class="link-btn social" href="${esc(r.direct_url)}" target="_blank" rel="noreferrer noopener" data-tip="${esc(tip)}">查看原帖 ↗</a>`;
+  // 社媒线索一律走站内详情弹窗：mock 数据的「真实 URL」帖子 ID 也是编造的，点了照样 404。
+  const act = `<button class="link-btn social" data-post-idx="${idx}" data-tip="${esc(tip)}">查看详情 ↗</button>`;
   return `<tr>
     <td class="l"><span class="dotst" style="background:${gpuColor(GPU_SOCIAL_COLORS, r.source_platform)}"></span><span class="mname">${esc(r.source_platform)}</span><br><span class="mven">${esc(r.poster_name || '—')}</span></td>
     <td class="l"><span class="mono">${esc(r.extracted_gpu_count == null ? '?' : r.extracted_gpu_count)}x ${esc(r.extracted_gpu_model || '未知型号')}</span><br><span class="pill price ${priceCls}" style="margin-top:4px">${esc(priceTxt)}</span></td>

@@ -27,6 +27,12 @@ LEAD_COLS = ("id", "source_platform", "poster_name", "post_text", "extracted_gpu
              "extracted_gpu_count", "extracted_price_desc", "contact_info",
              "direct_url", "raw_json_data", "created_at")
 
+# 采集日志 gpu_raw_posts 的字段：它是社媒线索的权威源（最新、direct_url 为真实平台结构、
+# 带 topic / 首次最近采集时间 / 完整原始载荷）。旧 gpu_social_leads 表作为回退。
+RAW_POST_COLS = ("id", "url", "platform", "poster_name", "post_text", "topic",
+                 "posted_at", "fetched_at", "is_offer", "first_seen_at", "last_seen_at",
+                 "raw_json_data")
+
 
 def _iso(v):
     """SQLite 存的是 naive UTC（'2026-11-03 14:22:39.98'），转成 ISO 让前端补 Z。"""
@@ -52,6 +58,52 @@ def _rows(con, table, cols, order):
     return out
 
 
+def _leads_from_raw_posts(con):
+    """从采集日志 gpu_raw_posts 重建社媒供给线索。
+
+    采集日志把每条帖（含非供给）都落了库，direct_url 是真实平台结构（非旧
+    social.example.com），并带 topic / 首次最近采集时间 / 完整原始载荷。
+    这里只保留 is_offer=True 的供给帖，并从 raw_json_data.extraction 还原
+    extractor 提取结果，字段名对齐 gpu.js 的期望。
+
+    返回 None 表示表不存在或没有供给帖，调用方应回退到旧 gpu_social_leads 表。
+    """
+    have = {r[1] for r in con.execute("PRAGMA table_info(gpu_raw_posts)")}
+    if not have:
+        return None
+    rows = _rows(con, "gpu_raw_posts", RAW_POST_COLS, "posted_at DESC")
+    leads = []
+    for r in rows:
+        if not r.get("is_offer"):
+            continue
+        ex = {}
+        raw = r.get("raw_json_data")
+        if raw:
+            try:
+                parsed = json.loads(raw) if isinstance(raw, str) else raw
+                ex = parsed.get("extraction") or {}
+            except (ValueError, TypeError):
+                ex = {}
+        leads.append({
+            "id": r.get("id"),
+            "source_platform": r.get("platform"),
+            "poster_name": r.get("poster_name"),
+            "post_text": r.get("post_text"),
+            "extracted_gpu_model": ex.get("gpu_model"),
+            "extracted_gpu_count": ex.get("gpu_count"),
+            "extracted_price_desc": ex.get("price_per_hour"),
+            "contact_info": ex.get("contact"),
+            "direct_url": r.get("url"),
+            "raw_json_data": raw,
+            "topic": r.get("topic"),
+            "posted_at": _iso(r.get("posted_at")),
+            "fetched_at": _iso(r.get("fetched_at")),
+            "first_seen_at": _iso(r.get("first_seen_at")),
+            "last_seen_at": _iso(r.get("last_seen_at")),
+        })
+    return leads if leads else None
+
+
 def main():
     db = os.environ.get("GPU_RADAR_DB") or DEFAULT_DB
     if not os.path.exists(db):
@@ -62,7 +114,11 @@ def main():
     con = sqlite3.connect(db)
     try:
         listings = _rows(con, "gpu_standard_listings", LISTING_COLS, "price_per_hour ASC")
-        leads = _rows(con, "gpu_social_leads", LEAD_COLS, "created_at DESC")
+        # 优先从采集日志 gpu_raw_posts 重建（最新、真实 URL、含采集时间/原始载荷）；
+        # 表不存在或没有供给帖时回退到旧 gpu_social_leads 表。
+        leads = _leads_from_raw_posts(con)
+        if leads is None:
+            leads = _rows(con, "gpu_social_leads", LEAD_COLS, "created_at DESC")
     except sqlite3.DatabaseError as e:
         print(f"  跳过 GPU：数据库读取失败 {e}", file=sys.stderr)
         return 0
@@ -76,7 +132,10 @@ def main():
     platforms = sorted({r["platform"] for r in listings if r.get("platform")})
     social_platforms = sorted({r["source_platform"] for r in leads if r.get("source_platform")})
     updated = [r.get("updated_at") for r in listings if r.get("updated_at")]
-    created = [r.get("created_at") for r in leads if r.get("created_at")]
+    # 重建出的线索没有 created_at，回退用 last_seen_at / posted_at 作为「最近线索」时间
+    created = [r.get("created_at") or r.get("last_seen_at") or r.get("posted_at")
+               for r in leads
+               if (r.get("created_at") or r.get("last_seen_at") or r.get("posted_at"))]
 
     payload = {
         "generated": datetime.now().isoformat(timespec="seconds"),
