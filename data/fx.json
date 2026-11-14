@@ -1,7 +1,7 @@
 {
-  "date": "2026-11-02",
-  "cny_per_usd": 6.6608,
-  "usd_per_cny": 0.150131,
+  "date": "2026-11-14",
+  "cny_per_usd": 6.6849,
+  "usd_per_cny": 0.149591,
   "source": "https://open.er-api.com/v6/latest/CNY (仅用于官网补齐部分)",
-  "updated": "2026-11-02T10:54:01+00:00"
+  "updated": "2026-11-14T12:04:42+00:00"
 }
